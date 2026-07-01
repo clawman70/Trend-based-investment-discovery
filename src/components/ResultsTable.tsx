@@ -169,7 +169,15 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTicke
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
+                            // Toggle peers view and auto-expand the row
                             setPeersViewTicker(peersViewTicker === item.ticker ? null : item.ticker);
+                            if (peersViewTicker !== item.ticker) {
+                              // If showing peers, make sure row is expanded
+                              setExpandedTickers((prev) => ({
+                                ...prev,
+                                [item.ticker]: true,
+                              }));
+                            }
                           }}
                           className="ml-1.5 text-[10px] font-mono text-brand-light/60 hover:text-brand-green border border-zinc-800 hover:border-brand-green bg-zinc-950/40 px-1.5 py-0.5 rounded cursor-pointer transition"
                         >
