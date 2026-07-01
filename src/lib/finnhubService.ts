@@ -143,4 +143,5 @@ export function getFinnhubService(): FinnhubService {
   return finnhubInstance;
 }
 
-export { FinnhubService, EnrichedQuote, FinnhubQuote };
+export { FinnhubService };
+export type { EnrichedQuote, FinnhubQuote };

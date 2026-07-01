@@ -7,6 +7,7 @@ interface PeerCompany {
   marketCap: number;
   peRatio: number | null;
   growth1Y: number;
+  isMain?: boolean;
 }
 
 interface PeersComparisonProps {

@@ -149,8 +149,10 @@ export async function POST(request: NextRequest) {
       const newSearch = await prisma.search.create({
         data: {
           trends,
-          filters: (filters || {}) as unknown as unknown,
-          trendAnalysis: (trendAnalysis || {}) as unknown as unknown,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          filters: (filters || {}) as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          trendAnalysis: (trendAnalysis || {}) as any,
           results: {
             create: results.map((r) => ({
               ticker: r.ticker,
@@ -164,8 +166,10 @@ export async function POST(request: NextRequest) {
                 peRatio: r.peRatio,
                 rationales: r.rationales || {},
                 relevanceScore: r.relevanceScore,
-              } as unknown as unknown,
-              dataQuality: r.dataQuality as unknown as unknown,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              } as any,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              dataQuality: r.dataQuality as any,
               compositeScore: r.compositeScore,
               convergenceScore: r.convergenceScore,
             })),

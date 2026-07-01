@@ -62,9 +62,8 @@ export function calculateCompanyScores(
   const totalWeight = relevance + convergence + valuation + health || 100;
 
   // Pre-calculate min/max for normalization across all companies
-  const allPERatios = companies.map((c) => c.peRatio);
-  const allGrowths = companies.map((c) => c.growth1Y || c.growth5Y || 0).filter((g) => g > 0);
-  const allDebtToEquity = companies.map((c) => c.debtToEquity);
+  const allPERatios = companies.map((c) => c.peRatio ?? null);
+  const allDebtToEquity = companies.map((c) => c.debtToEquity ?? null);
 
   return companies.map((c) => {
     // 1. Relevance Score (1-10, normalized to 0-1)
@@ -74,11 +73,11 @@ export function calculateCompanyScores(
     const convergenceNorm = c.convergenceScore || 0;
 
     // 3. Valuation Score (P/E ratio normalization)
-    const valuationNorm = calculateValuationScore(c.peRatio, allPERatios);
+    const valuationNorm = calculateValuationScore(c.peRatio ?? null, allPERatios);
 
     // 4. Health Score (data quality + debt-to-equity)
     const healthNorm = calculateHealthScore(
-      c.debtToEquity,
+      c.debtToEquity ?? null,
       c.dataQuality?.priceSource || 'unavailable',
       allDebtToEquity
     );

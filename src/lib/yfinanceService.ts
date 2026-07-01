@@ -87,7 +87,7 @@ class YFinanceService {
             close: parseFloat(parts[4]), // Close price is 5th column
           };
         })
-        .filter((d) => !isNaN(d.close))
+        .filter((d: { date: string; close: number }) => !isNaN(d.close))
         .reverse(); // Reverse to chronological order (oldest first)
 
       if (historicalData.length === 0) {
@@ -183,4 +183,5 @@ export function getYFinanceService(): YFinanceService {
   return yfinanceInstance;
 }
 
-export { YFinanceService, HistoricalPriceData };
+export { YFinanceService };
+export type { HistoricalPriceData };

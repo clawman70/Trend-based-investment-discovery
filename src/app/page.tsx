@@ -460,7 +460,6 @@ export default function Home() {
                       data={filteredResults}
                       watchlistTickers={watchlistTickers}
                       onToggleWatchlist={handleToggleWatchlist}
-                      onInspect={setInspectedTicker}
                     />
                   )}
                 </div>
