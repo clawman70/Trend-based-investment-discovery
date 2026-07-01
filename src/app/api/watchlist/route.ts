@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { isDbAvailable } from '@/lib/dbHelper';
-import { prisma } from '@/lib/prisma';
 import {
   memoryWatchlistItems,
   MemoryWatchlistItem,
@@ -14,27 +12,9 @@ interface FMPQuote {
 
 export async function GET() {
   try {
-    const dbActive = await isDbAvailable();
-    let items: {
-      id: string;
-      ticker: string;
-      companyName: string;
-      addedAt: Date;
-      priceAtAdd: number;
-      sourceSearchId: string | null;
-      notes: string | null;
-      tags: string[];
-    }[] = [];
-
-    if (dbActive) {
-      items = await prisma.watchlistItem.findMany({
-        orderBy: { addedAt: 'desc' },
-      });
-    } else {
-      items = [...memoryWatchlistItems].sort(
-        (a, b) => b.addedAt.getTime() - a.addedAt.getTime()
-      );
-    }
+    const items = [...memoryWatchlistItems].sort(
+      (a, b) => b.addedAt.getTime() - a.addedAt.getTime()
+    );
 
     if (items.length === 0) {
       return NextResponse.json([]);
@@ -50,7 +30,7 @@ export async function GET() {
         const batchTickersStr = tickers.join(',');
         const quoteUrl = `https://financialmodelingprep.com/api/v3/quote/${batchTickersStr}?apikey=${apiKey}`;
         const quoteResponse = await fetch(quoteUrl);
-        
+
         if (quoteResponse.ok) {
           const quotes = (await quoteResponse.json()) as FMPQuote[];
           if (Array.isArray(quotes)) {
@@ -105,50 +85,27 @@ export async function POST(request: NextRequest) {
     }
 
     const upperTicker = ticker.trim().toUpperCase();
-    const dbActive = await isDbAvailable();
 
-    if (dbActive) {
-      const newItem = await prisma.watchlistItem.upsert({
-        where: { ticker: upperTicker },
-        update: {
-          companyName,
-          priceAtAdd,
-          sourceSearchId: sourceSearchId || null,
-          notes: notes || null,
-          tags: tags || [],
-        },
-        create: {
-          ticker: upperTicker,
-          companyName,
-          priceAtAdd,
-          sourceSearchId: sourceSearchId || null,
-          notes: notes || null,
-          tags: tags || [],
-        },
-      });
-      return NextResponse.json(newItem);
+    // Memory write
+    const existingIdx = memoryWatchlistItems.findIndex((item) => item.ticker === upperTicker);
+    const newItem: MemoryWatchlistItem = {
+      id: existingIdx !== -1 ? memoryWatchlistItems[existingIdx].id : crypto.randomUUID(),
+      ticker: upperTicker,
+      companyName,
+      addedAt: existingIdx !== -1 ? memoryWatchlistItems[existingIdx].addedAt : new Date(),
+      priceAtAdd,
+      sourceSearchId: sourceSearchId || null,
+      notes: notes || null,
+      tags: tags || [],
+    };
+
+    if (existingIdx !== -1) {
+      memoryWatchlistItems[existingIdx] = newItem;
     } else {
-      // Memory fallback write
-      const existingIdx = memoryWatchlistItems.findIndex((item) => item.ticker === upperTicker);
-      const newItem: MemoryWatchlistItem = {
-        id: existingIdx !== -1 ? memoryWatchlistItems[existingIdx].id : crypto.randomUUID(),
-        ticker: upperTicker,
-        companyName,
-        addedAt: existingIdx !== -1 ? memoryWatchlistItems[existingIdx].addedAt : new Date(),
-        priceAtAdd,
-        sourceSearchId: sourceSearchId || null,
-        notes: notes || null,
-        tags: tags || [],
-      };
-
-      if (existingIdx !== -1) {
-        memoryWatchlistItems[existingIdx] = newItem;
-      } else {
-        memoryWatchlistItems.push(newItem);
-      }
-
-      return NextResponse.json(newItem);
+      memoryWatchlistItems.push(newItem);
     }
+
+    return NextResponse.json(newItem);
   } catch (error: unknown) {
     console.error("Error in watchlist POST:", error);
     const errorMessage = error instanceof Error ? error.message : 'Internal Server Error';
@@ -169,29 +126,15 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Watchlist Item ID is required' }, { status: 400 });
     }
 
-    const dbActive = await isDbAvailable();
-
-    if (dbActive) {
-      const updated = await prisma.watchlistItem.update({
-        where: { id },
-        data: {
-          notes: notes !== undefined ? notes : undefined,
-          tags: tags !== undefined ? tags : undefined,
-        },
-      });
-      return NextResponse.json(updated);
-    } else {
-      // Memory fallback update
-      const existing = memoryWatchlistItems.find((item) => item.id === id);
-      if (!existing) {
-        return NextResponse.json({ error: 'Watchlist Item not found' }, { status: 404 });
-      }
-
-      if (notes !== undefined) existing.notes = notes;
-      if (tags !== undefined) existing.tags = tags;
-
-      return NextResponse.json(existing);
+    const existing = memoryWatchlistItems.find((item) => item.id === id);
+    if (!existing) {
+      return NextResponse.json({ error: 'Watchlist Item not found' }, { status: 404 });
     }
+
+    if (notes !== undefined) existing.notes = notes;
+    if (tags !== undefined) existing.tags = tags;
+
+    return NextResponse.json(existing);
   } catch (error: unknown) {
     console.error("Error in watchlist PUT:", error);
     const errorMessage = error instanceof Error ? error.message : 'Internal Server Error';
@@ -209,28 +152,16 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Watchlist ID or Ticker is required' }, { status: 400 });
     }
 
-    const dbActive = await isDbAvailable();
+    const index = id
+      ? memoryWatchlistItems.findIndex((item) => item.id === id)
+      : memoryWatchlistItems.findIndex((item) => item.ticker === ticker?.toUpperCase());
 
-    if (dbActive) {
-      if (id) {
-        await prisma.watchlistItem.delete({ where: { id } });
-      } else if (ticker) {
-        await prisma.watchlistItem.delete({ where: { ticker: ticker.toUpperCase() } });
-      }
-      return NextResponse.json({ success: true });
-    } else {
-      // Memory fallback delete
-      const index = id 
-        ? memoryWatchlistItems.findIndex((item) => item.id === id)
-        : memoryWatchlistItems.findIndex((item) => item.ticker === ticker?.toUpperCase());
-
-      if (index === -1) {
-        return NextResponse.json({ error: 'Watchlist Item not found' }, { status: 404 });
-      }
-
-      memoryWatchlistItems.splice(index, 1);
-      return NextResponse.json({ success: true });
+    if (index === -1) {
+      return NextResponse.json({ error: 'Watchlist Item not found' }, { status: 404 });
     }
+
+    memoryWatchlistItems.splice(index, 1);
+    return NextResponse.json({ success: true });
   } catch (error: unknown) {
     console.error("Error in watchlist DELETE:", error);
     const errorMessage = error instanceof Error ? error.message : 'Internal Server Error';

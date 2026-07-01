@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
-import { isDbAvailable } from '@/lib/dbHelper';
+import crypto from 'crypto';
 import { memoryResearchScans } from '@/lib/memoryStore';
 import { generateTrendResearchReport } from '@/lib/geminiService';
-import { TrendResearchReport } from '@/lib/types';
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,42 +10,13 @@ export async function POST(request: NextRequest) {
 
     const formattedDomains = (domains as string[]).map(d => d.trim()).filter(Boolean);
     const sortedDomains = [...formattedDomains].sort();
-
-    // Cache lookup key
     const cleanPrompt = customPrompt ? (customPrompt as string).trim() : null;
     const now = new Date();
 
     // Skip cache if forceRefresh is true
     if (!forceRefresh) {
-      // 1. Database cache lookup
-      if (await isDbAvailable()) {
-        try {
-          const cachedScan = await prisma.researchScan.findFirst({
-            where: {
-              customPrompt: mode === 'open' ? cleanPrompt : null,
-              domains: mode === 'guided' ? { hasEvery: sortedDomains } : undefined,
-              cachedUntil: { gt: now },
-            },
-            orderBy: { createdAt: 'desc' },
-          });
-
-          if (cachedScan) {
-            // Confirm length parity for guided mode
-            if (mode === 'open' || cachedScan.domains.length === sortedDomains.length) {
-              const reportData = cachedScan.report as unknown as TrendResearchReport;
-              return NextResponse.json({
-                scanId: cachedScan.id,
-                ...reportData,
-              });
-            }
-          }
-        } catch (dbErr) {
-          console.warn('Failed to query research_scans from database, falling back to memory:', dbErr);
-        }
-      }
-
-      // 2. Memory cache fallback
-      const cachedScanMem = memoryResearchScans.find(scan => {
+      // Check memory cache
+      const cachedScan = memoryResearchScans.find(scan => {
         if (scan.cachedUntil <= now) return false;
         if (mode === 'open') {
           return scan.customPrompt === cleanPrompt;
@@ -57,46 +26,29 @@ export async function POST(request: NextRequest) {
         }
       });
 
-      if (cachedScanMem) {
+      if (cachedScan) {
         return NextResponse.json({
-          scanId: cachedScanMem.id,
-          ...cachedScanMem.report,
+          scanId: cachedScan.id,
+          ...cachedScan.report,
         });
       }
     }
 
-    // 3. Call AI service to generate report
+    // Generate report
     const report = await generateTrendResearchReport(sortedDomains, mode, cleanPrompt);
 
-    // 4. Save to cache
+    // Save to memory cache
+    const scanId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7-day TTL
-    let scanId = crypto.randomUUID();
 
-    if (await isDbAvailable()) {
-      try {
-        const savedScan = await prisma.researchScan.create({
-          data: {
-            domains: sortedDomains,
-            customPrompt: mode === 'open' ? cleanPrompt : null,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            report: report as any,
-            cachedUntil: expiresAt,
-          },
-        });
-        scanId = savedScan.id;
-      } catch (dbErr) {
-        console.warn('Failed to save research scan to database:', dbErr);
-      }
-    } else {
-      memoryResearchScans.push({
-        id: scanId,
-        createdAt: new Date(),
-        domains: sortedDomains,
-        customPrompt: mode === 'open' ? cleanPrompt : null,
-        report,
-        cachedUntil: expiresAt,
-      });
-    }
+    memoryResearchScans.push({
+      id: scanId,
+      createdAt: new Date(),
+      domains: sortedDomains,
+      customPrompt: mode === 'open' ? cleanPrompt : null,
+      report,
+      cachedUntil: expiresAt,
+    });
 
     return NextResponse.json({
       scanId,

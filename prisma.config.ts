@@ -1,8 +1,0 @@
-import { defineConfig } from "prisma/config";
-
-export default defineConfig({
-  schema: "prisma/schema.prisma",
-  datasource: {
-    url: process.env.POSTGRES_PRISMA_URL || "postgresql://localhost:5432/placeholder",
-  },
-});

@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { isDbAvailable } from '@/lib/dbHelper';
-import { prisma } from '@/lib/prisma';
 import {
   memorySearches,
   memorySearchResults,
@@ -16,116 +14,55 @@ interface QueryFilters {
   currentPrice: string | null;
 }
 
-interface DBFinancialData {
-  stockPrice: number;
-  marketCap: number;
-  exchange: 'NASDAQ' | 'NYSE';
-  peRatio: number | null;
-  rationales: Record<string, string>;
-  relevanceScore?: number;
-}
-
-interface DBDataQuality {
-  priceSource: 'live' | 'unavailable';
-}
-
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
-    const dbActive = await isDbAvailable();
 
     if (id) {
-      if (dbActive) {
-        const search = await prisma.search.findUnique({
-          where: { id },
-          include: { results: true },
-        });
-
-        if (!search) {
-          return NextResponse.json({ error: 'Search record not found' }, { status: 404 });
-        }
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const companies: ScoredCompanyData[] = search.results.map((res: any) => {
-          const fin = (res.financialData || {}) as unknown as DBFinancialData;
-          const dq = (res.dataQuality || {}) as unknown as DBDataQuality;
-          return {
-            ticker: res.ticker,
-            companyName: res.companyName,
-            rationale: res.rationale,
-            trendsMatched: Array.isArray(res.trendMatched) ? res.trendMatched : [],
-            convergenceScore: res.convergenceScore || 0,
-            compositeScore: res.compositeScore || 0,
-            relevanceScore: fin.relevanceScore !== undefined ? fin.relevanceScore : 5,
-            dataQuality: {
-              priceSource: dq.priceSource || 'unavailable',
-            },
-            stockPrice: fin.stockPrice || 0,
-            marketCap: fin.marketCap || 0,
-            exchange: (fin.exchange || 'NASDAQ') as 'NASDAQ' | 'NYSE',
-            peRatio: fin.peRatio !== undefined ? fin.peRatio : null,
-            rationales: fin.rationales || {},
-          };
-        });
-
-        return NextResponse.json({
-          search: {
-            id: search.id,
-            createdAt: search.createdAt,
-            trends: search.trends,
-            filters: search.filters,
-            trendAnalysis: search.trendAnalysis,
-          },
-          companies,
-        });
-      } else {
-        const search = memorySearches.find((s) => s.id === id);
-        if (!search) {
-          return NextResponse.json({ error: 'Search record not found (Memory)' }, { status: 404 });
-        }
-
-        const relatedResults = memorySearchResults.filter((r) => r.searchId === id);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const companies: ScoredCompanyData[] = relatedResults.map((res: any) => {
-          const fin = (res.financialData || {}) as unknown as DBFinancialData;
-          const dq = (res.dataQuality || {}) as unknown as DBDataQuality;
-          return {
-            ticker: res.ticker,
-            companyName: res.companyName,
-            rationale: res.rationale,
-            trendsMatched: Array.isArray(res.trendMatched) ? res.trendMatched : [],
-            convergenceScore: res.convergenceScore || 0,
-            compositeScore: res.compositeScore || 0,
-            relevanceScore: fin.relevanceScore !== undefined ? fin.relevanceScore : 5,
-            dataQuality: {
-              priceSource: dq.priceSource || 'unavailable',
-            },
-            stockPrice: fin.stockPrice || 0,
-            marketCap: fin.marketCap || 0,
-            exchange: (fin.exchange || 'NASDAQ') as 'NASDAQ' | 'NYSE',
-            peRatio: fin.peRatio !== undefined ? fin.peRatio : null,
-            rationales: fin.rationales || {},
-          };
-        });
-
-        return NextResponse.json({ search, companies });
+      const search = memorySearches.find((s) => s.id === id);
+      if (!search) {
+        return NextResponse.json({ error: 'Search record not found' }, { status: 404 });
       }
+
+      const relatedResults = memorySearchResults.filter((r) => r.searchId === id);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const companies: ScoredCompanyData[] = relatedResults.map((res: any) => ({
+        ticker: res.ticker,
+        companyName: res.companyName,
+        rationale: res.rationale,
+        trendsMatched: Array.isArray(res.trendMatched) ? res.trendMatched : [],
+        convergenceScore: res.convergenceScore || 0,
+        compositeScore: res.compositeScore || 0,
+        relevanceScore: res.financialData?.relevanceScore !== undefined ? res.financialData.relevanceScore : 5,
+        dataQuality: {
+          priceSource: res.dataQuality?.priceSource || 'unavailable',
+        },
+        stockPrice: res.financialData?.stockPrice || 0,
+        marketCap: res.financialData?.marketCap || 0,
+        exchange: (res.financialData?.exchange || 'NASDAQ') as 'NASDAQ' | 'NYSE',
+        peRatio: res.financialData?.peRatio !== undefined ? res.financialData.peRatio : null,
+        rationales: res.financialData?.rationales || {},
+      }));
+
+      return NextResponse.json({
+        search: {
+          id: search.id,
+          createdAt: search.createdAt,
+          trends: search.trends,
+          filters: search.filters,
+          trendAnalysis: search.trendAnalysis,
+        },
+        companies,
+      });
     }
 
-    if (dbActive) {
-      const list = await prisma.search.findMany({
-        orderBy: { createdAt: 'desc' },
-      });
-      return NextResponse.json(list);
-    } else {
-      const sortedMemory = [...memorySearches].sort(
-        (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-      );
-      return NextResponse.json(sortedMemory);
-    }
+    const sortedMemory = [...memorySearches].sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+    );
+    return NextResponse.json(sortedMemory);
   } catch (error: unknown) {
-    console.error("Error in history route GET:", error);
+    console.error('Error in history route GET:', error);
     const errorMessage = error instanceof Error ? error.message : 'Internal Server Error';
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
@@ -145,81 +82,43 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Trends list is required' }, { status: 400 });
     }
 
-    const dbActive = await isDbAvailable();
+    const searchId = crypto.randomUUID();
+    const newSearch: MemorySearch = {
+      id: searchId,
+      createdAt: new Date(),
+      trends,
+      filters: filters || {},
+      trendAnalysis: trendAnalysis || {},
+    };
 
-    if (dbActive) {
-      const newSearch = await prisma.search.create({
-        data: {
-          trends,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          filters: (filters || {}) as any,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          trendAnalysis: (trendAnalysis || {}) as any,
-          results: {
-            create: results.map((r) => ({
-              ticker: r.ticker,
-              companyName: r.companyName,
-              rationale: r.rationale || '',
-              trendMatched: r.trendsMatched || [],
-              financialData: {
-                stockPrice: r.stockPrice,
-                marketCap: r.marketCap,
-                exchange: r.exchange,
-                peRatio: r.peRatio,
-                rationales: r.rationales || {},
-                relevanceScore: r.relevanceScore,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              } as any,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              dataQuality: r.dataQuality as any,
-              compositeScore: r.compositeScore,
-              convergenceScore: r.convergenceScore,
-            })),
-          },
+    memorySearches.push(newSearch);
+
+    for (const r of results) {
+      const resultEntry: MemorySearchResult = {
+        id: crypto.randomUUID(),
+        searchId,
+        ticker: r.ticker,
+        companyName: r.companyName,
+        rationale: r.rationale || '',
+        trendMatched: r.trendsMatched || [],
+        financialData: {
+          stockPrice: r.stockPrice,
+          marketCap: r.marketCap,
+          exchange: r.exchange,
+          peRatio: r.peRatio,
+          rationales: r.rationales || {},
+          relevanceScore: r.relevanceScore,
         },
-        include: { results: true },
-      });
-
-      return NextResponse.json(newSearch);
-    } else {
-      const searchId = crypto.randomUUID();
-      const newSearch: MemorySearch = {
-        id: searchId,
-        createdAt: new Date(),
-        trends,
-        filters: filters || {},
-        trendAnalysis: trendAnalysis || {},
+        dataQuality: r.dataQuality,
+        compositeScore: r.compositeScore,
+        convergenceScore: r.convergenceScore,
       };
-
-      memorySearches.push(newSearch);
-
-      for (const r of results) {
-        const resultEntry: MemorySearchResult = {
-          id: crypto.randomUUID(),
-          searchId,
-          ticker: r.ticker,
-          companyName: r.companyName,
-          rationale: r.rationale || '',
-          trendMatched: r.trendsMatched || [],
-          financialData: {
-            stockPrice: r.stockPrice,
-            marketCap: r.marketCap,
-            exchange: r.exchange,
-            peRatio: r.peRatio,
-            rationales: r.rationales || {},
-            relevanceScore: r.relevanceScore,
-          },
-          dataQuality: r.dataQuality,
-          compositeScore: r.compositeScore,
-          convergenceScore: r.convergenceScore,
-        };
-        memorySearchResults.push(resultEntry);
-      }
-
-      return NextResponse.json(newSearch);
+      memorySearchResults.push(resultEntry);
     }
+
+    return NextResponse.json(newSearch);
   } catch (error: unknown) {
-    console.error("Error in history route POST:", error);
+    console.error('Error in history route POST:', error);
     const errorMessage = error instanceof Error ? error.message : 'Internal Server Error';
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
@@ -234,33 +133,24 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Search ID is required' }, { status: 400 });
     }
 
-    const dbActive = await isDbAvailable();
-
-    if (dbActive) {
-      await prisma.search.delete({
-        where: { id },
-      });
-      return NextResponse.json({ success: true });
-    } else {
-      const index = memorySearches.findIndex((s) => s.id === id);
-      if (index === -1) {
-        return NextResponse.json({ error: 'Search not found' }, { status: 404 });
-      }
-      memorySearches.splice(index, 1);
-      
-      const indexesToRemove = memorySearchResults
-        .map((r, idx) => (r.searchId === id ? idx : -1))
-        .filter((idx) => idx !== -1)
-        .reverse();
-
-      for (const idx of indexesToRemove) {
-        memorySearchResults.splice(idx, 1);
-      }
-
-      return NextResponse.json({ success: true });
+    const index = memorySearches.findIndex((s) => s.id === id);
+    if (index === -1) {
+      return NextResponse.json({ error: 'Search not found' }, { status: 404 });
     }
+    memorySearches.splice(index, 1);
+
+    const indexesToRemove = memorySearchResults
+      .map((r, idx) => (r.searchId === id ? idx : -1))
+      .filter((idx) => idx !== -1)
+      .reverse();
+
+    for (const idx of indexesToRemove) {
+      memorySearchResults.splice(idx, 1);
+    }
+
+    return NextResponse.json({ success: true });
   } catch (error: unknown) {
-    console.error("Error in history route DELETE:", error);
+    console.error('Error in history route DELETE:', error);
     const errorMessage = error instanceof Error ? error.message : 'Internal Server Error';
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
