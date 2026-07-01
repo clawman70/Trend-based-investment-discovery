@@ -8,7 +8,6 @@ interface ResultsTableProps {
   data: ScoredCompanyData[];
   watchlistTickers?: Set<string>;
   onToggleWatchlist?: (company: ScoredCompanyData) => void;
-  onInspect?: (ticker: string) => void;
 }
 
 const formatCurrency = (num: number, decimals = 2) => {
@@ -24,7 +23,7 @@ const formatMarketCap = (mc: number) => {
   return `$${new Intl.NumberFormat('en-US').format(mc)}`;
 };
 
-export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTickers = new Set(), onToggleWatchlist, onInspect }) => {
+export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTickers = new Set(), onToggleWatchlist }) => {
   const { items, requestSort, sortConfig } = useSortableData(data);
   const [expandedTickers, setExpandedTickers] = useState<Record<string, boolean>>({});
 
@@ -156,18 +155,14 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTicke
                           {item.ticker}
                           <span className="text-[10px] text-brand-light/50">↗</span>
                         </a>
-                        {onInspect && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onInspect(item.ticker);
-                            }}
-                            className="text-[10px] font-mono text-brand-light/60 hover:text-brand-green border border-zinc-800 hover:border-brand-green bg-zinc-950/40 px-1.5 py-0.5 rounded cursor-pointer"
-                          >
-                            [INSPECT]
-                          </button>
-                        )}
+                        <a
+                          href={`https://finance.yahoo.com/quote/${item.ticker}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[10px] font-mono text-brand-light/60 hover:text-brand-green border border-zinc-800 hover:border-brand-green bg-zinc-950/40 px-1.5 py-0.5 rounded inline-block"
+                        >
+                          [YAHOO DETAILS] ↗
+                        </a>
                       </div>
                     </td>
 
