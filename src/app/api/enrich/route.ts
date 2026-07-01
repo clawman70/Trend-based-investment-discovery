@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCachedData, setCachedData } from '@/lib/dbHelper';
+import { getFinnhubService } from '@/lib/finnhubService';
+import { getYFinanceService } from '@/lib/yfinanceService';
 
 const CACHE_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const MAX_DATE_DIFF_MS = 30 * 24 * 60 * 60 * 1000; // 30 days maximum difference for growth price matching
 
 interface EnrichedData {
   ticker: string;
@@ -19,34 +20,6 @@ interface EnrichedData {
   peRatio: number | null;
 }
 
-interface FMPQuote {
-  symbol?: string;
-  price?: number;
-  marketCap?: number;
-  exchange?: string;
-  name?: string;
-  pe?: number | null;
-}
-
-const findClosestPrice = (targetDate: Date, historicalPrices: { date: string; close: number }[]): number | null => {
-  if (!historicalPrices || historicalPrices.length === 0) return null;
-
-  const targetTime = targetDate.getTime();
-  let closestRecord: { date: string; close: number } | null = null;
-  let minDiff = Infinity;
-
-  for (const record of historicalPrices) {
-    const recordTime = new Date(record.date).getTime();
-    const diff = Math.abs(targetTime - recordTime);
-    if (diff < minDiff && diff < MAX_DATE_DIFF_MS) {
-      minDiff = diff;
-      closestRecord = record;
-    }
-  }
-
-  return closestRecord ? closestRecord.close : null;
-};
-
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -56,7 +29,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Tickers array is required' }, { status: 400 });
     }
 
-    const apiKey = process.env.FMP_API_KEY;
     const resultsMap = new Map<string, EnrichedData>();
     const uncachedTickers: string[] = [];
 
@@ -71,96 +43,51 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 2. Fetch uncached tickers from FMP
-    if (uncachedTickers.length > 0 && apiKey && apiKey !== 'PLACEHOLDER_API_KEY') {
+    // 2. Fetch real-time quotes from Finnhub (respects 60 calls/min rate limit)
+    if (uncachedTickers.length > 0) {
       try {
-        const batchTickersStr = uncachedTickers.join(',');
-        const quoteUrl = `https://financialmodelingprep.com/api/v3/quote/${batchTickersStr}?apikey=${apiKey}`;
-        const quoteResponse = await fetch(quoteUrl);
+        const finnhubService = getFinnhubService();
+        const finnhubQuotes = await finnhubService.fetchBatchQuotes(uncachedTickers);
 
-        if (quoteResponse.ok) {
-          const quotes = (await quoteResponse.json()) as FMPQuote[];
-          
-          if (Array.isArray(quotes)) {
-            for (const q of quotes) {
-              if (!q.symbol) continue;
-              const ticker = String(q.symbol).toUpperCase();
-              
-              const stockPrice = Number(q.price || 0);
-              const marketCap = Number(q.marketCap || 0);
-              const exchangeRaw = String(q.exchange || '').toUpperCase();
-              const exchange: 'NASDAQ' | 'NYSE' = exchangeRaw.includes('NYSE') ? 'NYSE' : 'NASDAQ';
-              const peRatio = q.pe !== null && q.pe !== undefined ? Number(q.pe) : null;
+        if (finnhubQuotes.size > 0) {
+          // 3. Fetch historical growth data from yfinance
+          const yfinanceService = getYFinanceService();
+          const tickersForHistory = Array.from(finnhubQuotes.values()).map((q) => ({
+            ticker: q.ticker,
+            currentPrice: q.stockPrice,
+          }));
 
-              // Fetch historical prices for growth calculations
-              let growth1Y = 0;
-              let growth5Y = 0;
-              let growthSource: 'calculated' | 'insufficient_history' | 'unavailable' = 'unavailable';
+          const historicalData = await yfinanceService.fetchBatchHistoricalData(tickersForHistory);
 
-              try {
-                const historyUrl = `https://financialmodelingprep.com/api/v3/historical-price-full/${ticker}?apikey=${apiKey}`;
-                const historyResponse = await fetch(historyUrl);
+          // 4. Merge Finnhub quotes with yfinance historical data
+          for (const [ticker, finnhubQuote] of finnhubQuotes) {
+            const historical = historicalData.get(ticker);
 
-                if (historyResponse.ok) {
-                  const historyData = await historyResponse.json();
-                  const historical = (historyData.historical || []) as { date: string; close: number }[];
+            const enrichedRecord: EnrichedData = {
+              ticker,
+              companyName: ticker, // Finnhub doesn't provide company name in quote endpoint
+              stockPrice: finnhubQuote.stockPrice,
+              marketCap: finnhubQuote.marketCap, // Will be 0 for now (would need separate Finnhub call)
+              exchange: finnhubQuote.exchange,
+              growth1Y: historical?.growth1Y ?? 0,
+              growth5Y: historical?.growth5Y ?? 0,
+              dataQuality: {
+                priceSource: finnhubQuote.stockPrice > 0 ? 'live' : 'unavailable',
+                growthSource: historical?.growthSource ?? 'unavailable',
+              },
+              peRatio: finnhubQuote.peRatio,
+            };
 
-                  if (historical.length > 0) {
-                    const nowTime = new Date();
-                    
-                    const oneYearAgo = new Date();
-                    oneYearAgo.setFullYear(nowTime.getFullYear() - 1);
-                    
-                    const fiveYearsAgo = new Date();
-                    fiveYearsAgo.setFullYear(nowTime.getFullYear() - 5);
-
-                    const priceToday = stockPrice;
-                    const price1Y = findClosestPrice(oneYearAgo, historical);
-                    const price5Y = findClosestPrice(fiveYearsAgo, historical);
-
-                    if (price1Y !== null && price5Y !== null && price1Y > 0 && price5Y > 0) {
-                      growth1Y = ((priceToday - price1Y) / price1Y) * 100;
-                      growth5Y = ((priceToday - price5Y) / price5Y) * 100;
-                      growthSource = 'calculated';
-                    } else {
-                      growthSource = 'insufficient_history';
-                    }
-                  } else {
-                    growthSource = 'insufficient_history';
-                  }
-                }
-              } catch (histErr) {
-                console.error(`Failed to fetch history for ${ticker}:`, histErr);
-              }
-
-              const enrichedRecord: EnrichedData = {
-                ticker,
-                companyName: q.name || ticker,
-                stockPrice,
-                marketCap,
-                exchange,
-                growth1Y,
-                growth5Y,
-                dataQuality: {
-                  priceSource: stockPrice > 0 ? 'live' : 'unavailable',
-                  growthSource,
-                },
-                peRatio
-              };
-
-              resultsMap.set(ticker, enrichedRecord);
-              await setCachedData(`financial:${ticker}`, 'financial', enrichedRecord, CACHE_DURATION_MS);
-            }
+            resultsMap.set(ticker, enrichedRecord);
+            await setCachedData(`financial:${ticker}`, 'financial', enrichedRecord, CACHE_DURATION_MS);
           }
-        } else {
-          console.error(`FMP quote batch returned status ${quoteResponse.status}`);
         }
       } catch (err) {
-        console.error("FMP enrichment request failed:", err);
+        console.error('Finnhub/yfinance enrichment failed:', err);
       }
     }
 
-    // 3. Mark any remaining tickers as unavailable
+    // 5. Mark any remaining tickers as unavailable
     for (const ticker of uncachedTickers) {
       if (!resultsMap.has(ticker)) {
         resultsMap.set(ticker, {
@@ -175,17 +102,17 @@ export async function POST(request: NextRequest) {
             priceSource: 'unavailable',
             growthSource: 'unavailable',
           },
-          peRatio: null
+          peRatio: null,
         });
       }
     }
 
     // Assemble results in the original requested order
-    const orderedResults = tickers.map(t => resultsMap.get(t.trim().toUpperCase())!);
+    const orderedResults = tickers.map((t) => resultsMap.get(t.trim().toUpperCase())!);
 
     return NextResponse.json(orderedResults);
   } catch (error: unknown) {
-    console.error("Error in enrich route:", error);
+    console.error('Error in enrich route:', error);
     const errorMessage = error instanceof Error ? error.message : 'Internal Server Error';
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
