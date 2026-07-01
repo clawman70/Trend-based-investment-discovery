@@ -46,7 +46,8 @@ export async function GET(request: NextRequest) {
           return NextResponse.json({ error: 'Search record not found' }, { status: 404 });
         }
 
-        const companies: ScoredCompanyData[] = search.results.map((res) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const companies: ScoredCompanyData[] = search.results.map((res: any) => {
           const fin = (res.financialData || {}) as unknown as DBFinancialData;
           const dq = (res.dataQuality || {}) as unknown as DBDataQuality;
           return {
@@ -85,7 +86,8 @@ export async function GET(request: NextRequest) {
         }
 
         const relatedResults = memorySearchResults.filter((r) => r.searchId === id);
-        const companies: ScoredCompanyData[] = relatedResults.map((res) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const companies: ScoredCompanyData[] = relatedResults.map((res: any) => {
           const fin = (res.financialData || {}) as unknown as DBFinancialData;
           const dq = (res.dataQuality || {}) as unknown as DBDataQuality;
           return {
