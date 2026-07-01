@@ -78,7 +78,8 @@ export async function POST(request: NextRequest) {
           data: {
             domains: sortedDomains,
             customPrompt: mode === 'open' ? cleanPrompt : null,
-            report: report as unknown as import('@prisma/client').Prisma.InputJsonValue,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            report: report as any,
             cachedUntil: expiresAt,
           },
         });

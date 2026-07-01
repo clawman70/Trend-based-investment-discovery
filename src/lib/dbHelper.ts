@@ -1,5 +1,4 @@
 import { prisma } from './prisma';
-import { Prisma } from '@prisma/client';
 
 // Simple in-memory fallback cache
 const memoryCache = new Map<string, { data: unknown; expiresAt: Date }>();
@@ -59,7 +58,8 @@ export async function setCachedData(key: string, type: string, data: unknown, du
       await prisma.apiCache.upsert({
         where: { cacheKey: key },
         update: {
-          data: data as Prisma.InputJsonValue,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          data: data as any,
           expiresAt,
           cacheType: type,
           fetchedAt: new Date(),
@@ -67,7 +67,8 @@ export async function setCachedData(key: string, type: string, data: unknown, du
         create: {
           cacheKey: key,
           cacheType: type,
-          data: data as Prisma.InputJsonValue,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          data: data as any,
           expiresAt,
         },
       });
