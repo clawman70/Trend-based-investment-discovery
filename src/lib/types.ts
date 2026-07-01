@@ -24,6 +24,7 @@ export interface CompanyData extends DiscoveredCompany {
   peRatio?: number | null;
   growth1Y?: number;
   growth5Y?: number;
+  debtToEquity?: number | null;
 }
 
 export interface ScoredCompanyData extends CompanyData {
