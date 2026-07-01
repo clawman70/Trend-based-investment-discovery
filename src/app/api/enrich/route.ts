@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
               companyName: ticker, // Finnhub doesn't provide company name in quote endpoint
               stockPrice: finnhubQuote.stockPrice,
               marketCap: finnhubQuote.marketCap, // Will be 0 for now (would need separate Finnhub call)
-              exchange: finnhubQuote.exchange,
+              exchange: (finnhubQuote.exchange as 'NASDAQ' | 'NYSE') || 'NASDAQ',
               growth1Y: historical?.growth1Y ?? 0,
               growth5Y: historical?.growth5Y ?? 0,
               dataQuality: {

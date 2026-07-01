@@ -31,15 +31,12 @@ function calculateValuationScore(peRatio: number | null, allPERatios: (number | 
  * Calculate normalized growth score (0-1)
  * Higher growth is better. Uses 1Y growth primarily, 5Y as secondary.
  */
-function calculateGrowthScore(growth1Y: number, growth5Y: number, allGrowths: number[]): number {
+function calculateGrowthScore(growth1Y: number, growth5Y: number): number {
   const avgGrowth = growth1Y > 0 ? growth1Y : growth5Y > 0 ? growth5Y : 0;
 
-  if (avgGrowth === 0 || allGrowths.length === 0) return 0.5;
+  if (avgGrowth === 0) return 0.5;
 
-  const minGrowth = Math.min(...allGrowths);
-  const maxGrowth = Math.max(...allGrowths);
-
-  return normalizeMinMax(avgGrowth, minGrowth, maxGrowth);
+  return Math.min(1, Math.max(0, avgGrowth / 100)); // Normalize growth % to 0-1
 }
 
 /**
