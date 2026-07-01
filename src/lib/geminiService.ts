@@ -5,6 +5,41 @@ const apiKey = process.env.GOOGLE_GENAI_API_KEY;
 
 const ai = new GoogleGenAI({ apiKey: apiKey || 'PLACEHOLDER_API_KEY' });
 
+/**
+ * Retry helper with exponential backoff for rate-limited Gemini calls
+ * Retries up to 3 times with delays: 1s, 2s, 4s
+ */
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3
+): Promise<T> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error as Error;
+      const isRateLimitError =
+        error instanceof Error &&
+        (error.message.includes('429') ||
+         error.message.includes('503') ||
+         error.message.includes('RESOURCE_EXHAUSTED') ||
+         error.message.includes('high demand'));
+
+      if (!isRateLimitError || attempt === maxRetries) {
+        throw error; // Not a rate limit or last attempt, throw immediately
+      }
+
+      const delayMs = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s
+      console.log(`[Gemini Retry] Rate limited. Attempt ${attempt}/${maxRetries}, waiting ${delayMs}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  throw lastError || new Error('Max retries exceeded');
+}
+
 const companySchema = {
   type: Type.ARRAY,
   items: {
@@ -125,32 +160,34 @@ export const discoverCompaniesFromAI = async (
   }
 
   const prompt = buildPrompt(trend, filters);
-  
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: companySchema,
-        temperature: 0.2,
-        // TODO: thinkingConfig not yet typed in @google/genai SDK — remove cast when SDK catches up to 3.5 Flash
-        thinkingConfig: {
-          thinkingLevel: "medium",
-        },
-      } as unknown as Record<string, unknown>,
-    });
 
-    const jsonString = response.text?.trim() || "[]";
-    const result = JSON.parse(jsonString);
-    if (!Array.isArray(result)) {
-      throw new Error("Invalid output format: Expected array of companies");
+  return retryWithBackoff(async () => {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: companySchema,
+          temperature: 0.2,
+          // TODO: thinkingConfig not yet typed in @google/genai SDK — remove cast when SDK catches up to 3.5 Flash
+          thinkingConfig: {
+            thinkingLevel: "medium",
+          },
+        } as unknown as Record<string, unknown>,
+      });
+
+      const jsonString = response.text?.trim() || "[]";
+      const result = JSON.parse(jsonString);
+      if (!Array.isArray(result)) {
+        throw new Error("Invalid output format: Expected array of companies");
+      }
+      return result as DiscoveredCompany[];
+    } catch (error) {
+      console.error("Error calling Gemini API for discovery:", error);
+      throw error; // Let retry logic handle it
     }
-    return result as DiscoveredCompany[];
-  } catch (error) {
-    console.error("Error calling Gemini API:", error);
-    throw new Error("Failed to get a valid response from the AI model.");
-  }
+  });
 };
 
 export const analyzeTrendFromAI = async (trend: string): Promise<TrendAnalysis> => {
