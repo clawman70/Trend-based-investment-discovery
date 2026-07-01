@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { Prisma } from '@prisma/client';
 import { isDbAvailable } from '@/lib/dbHelper';
 import { prisma } from '@/lib/prisma';
 import {
@@ -150,8 +149,8 @@ export async function POST(request: NextRequest) {
       const newSearch = await prisma.search.create({
         data: {
           trends,
-          filters: (filters || {}) as unknown as Prisma.InputJsonValue,
-          trendAnalysis: (trendAnalysis || {}) as unknown as Prisma.InputJsonValue,
+          filters: (filters || {}) as unknown as unknown,
+          trendAnalysis: (trendAnalysis || {}) as unknown as unknown,
           results: {
             create: results.map((r) => ({
               ticker: r.ticker,
@@ -165,8 +164,8 @@ export async function POST(request: NextRequest) {
                 peRatio: r.peRatio,
                 rationales: r.rationales || {},
                 relevanceScore: r.relevanceScore,
-              } as unknown as Prisma.InputJsonValue,
-              dataQuality: r.dataQuality as unknown as Prisma.InputJsonValue,
+              } as unknown as unknown,
+              dataQuality: r.dataQuality as unknown as unknown,
               compositeScore: r.compositeScore,
               convergenceScore: r.convergenceScore,
             })),
