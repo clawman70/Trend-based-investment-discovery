@@ -1,0 +1,102 @@
+datasource db {
+  provider  = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Search {
+  id            String         @id @default(uuid())
+  createdAt     DateTime       @default(now()) @map("created_at")
+  trends        String[]       // 1-3 trend descriptions
+  filters       Json           // market cap, exchange, price filters
+  trendAnalysis Json?          @map("trend_analysis") // cached trend report card data (Phase 2)
+  results       SearchResult[]
+
+  @@map("searches")
+}
+
+model SearchResult {
+  id               String   @id @default(uuid())
+  searchId         String   @map("search_id")
+  search           Search   @relation(fields: [searchId], references: [id], onDelete: Cascade)
+  ticker           String
+  companyName      String   @map("company_name")
+  rationale        String
+  trendMatched     String[]  @map("trend_matched")
+  financialData    Json     @map("financial_data")
+  dataQuality      Json     @map("data_quality")
+  compositeScore   Float?   @map("composite_score")
+  convergenceScore Float?   @map("convergence_score")
+
+  @@map("search_results")
+}
+
+model WatchlistItem {
+  id             String          @id @default(uuid())
+  ticker         String          @unique
+  companyName    String          @map("company_name")
+  addedAt        DateTime        @default(now()) @map("added_at")
+  priceAtAdd     Float           @map("price_at_add")
+  sourceSearchId String?         @map("source_search")
+  notes          String?
+  tags           String[]
+  portfolioItems PortfolioItem[]
+
+  @@map("watchlist_items")
+}
+
+model TrendPortfolio {
+  id          String          @id @default(uuid())
+  name        String
+  description String?
+  createdAt   DateTime        @default(now()) @map("created_at")
+  items       PortfolioItem[]
+
+  @@map("trend_portfolios")
+}
+
+model PortfolioItem {
+  id          String         @id @default(uuid())
+  portfolioId String         @map("portfolio_id")
+  portfolio   TrendPortfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  watchlistId String         @map("watchlist_id")
+  watchlist   WatchlistItem  @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+
+  @@map("portfolio_items")
+}
+
+model ApiCache {
+  id        String   @id @default(uuid())
+  cacheKey  String   @unique @map("cache_key")
+  cacheType String   @map("cache_type")
+  data      Json
+  fetchedAt DateTime @default(now()) @map("fetched_at")
+  expiresAt DateTime @map("expires_at")
+
+  @@map("api_cache")
+}
+
+model ResearchScan {
+  id           String                 @id @default(uuid())
+  createdAt    DateTime               @default(now()) @map("created_at")
+  domains      String[]
+  customPrompt String?                @map("custom_prompt")
+  report       Json                   // Full TrendResearchReport
+  cachedUntil  DateTime               @map("cached_until")
+  loadedTheses ResearchLoadedThesis[]
+
+  @@map("research_scans")
+}
+
+model ResearchLoadedThesis {
+  id        String       @id @default(uuid())
+  scanId    String       @map("scan_id")
+  scan      ResearchScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  thesis    String
+  loadedAt  DateTime     @default(now()) @map("loaded_at")
+  searchId  String?      @map("search_id")
+
+  @@map("research_loaded_theses")
+}

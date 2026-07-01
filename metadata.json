@@ -1,0 +1,6 @@
+{
+  "name": "Trend-Based Investment Discovery Engine",
+  "description": "An application that allows an investor to describe a qualitative market trend in natural language, identifies relevant public companies, and enriches this list with real-time financial data.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
