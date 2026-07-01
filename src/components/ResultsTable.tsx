@@ -3,6 +3,7 @@ import { ScoredCompanyData } from '../lib/types';
 import { useSortableData } from '../hooks/useSortableData';
 import { exportToCSV } from '../lib/csvExporter';
 import { ArrowUpIcon, ArrowDownIcon, ExportIcon } from './icons';
+import { PeersComparison } from './PeersComparison';
 
 interface ResultsTableProps {
   data: ScoredCompanyData[];
@@ -26,6 +27,7 @@ const formatMarketCap = (mc: number) => {
 export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTickers = new Set(), onToggleWatchlist }) => {
   const { items, requestSort, sortConfig } = useSortableData(data);
   const [expandedTickers, setExpandedTickers] = useState<Record<string, boolean>>({});
+  const [peersViewTicker, setPeersViewTicker] = useState<string | null>(null);
 
   const toggleExpand = (ticker: string) => {
     setExpandedTickers((prev) => ({
@@ -163,6 +165,16 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTicke
                         >
                           [YAHOO DETAILS] ↗
                         </a>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPeersViewTicker(peersViewTicker === item.ticker ? null : item.ticker);
+                          }}
+                          className="ml-1.5 text-[10px] font-mono text-brand-light/60 hover:text-brand-green border border-zinc-800 hover:border-brand-green bg-zinc-950/40 px-1.5 py-0.5 rounded cursor-pointer transition"
+                        >
+                          [PEERS]
+                        </button>
                       </div>
                     </td>
 
@@ -226,20 +238,34 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTicke
                   {isExpanded && (
                     <tr className="bg-zinc-950/40">
                       <td colSpan={tableHeaders.length + (onToggleWatchlist ? 3 : 2)} className="px-6 py-4 border-t border-brand-border/20">
-                        <div className="space-y-3 pl-8">
-                          <div className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest font-bold">
-                            Convergence Rationales:
+                        <div className="space-y-6 pl-8">
+                          <div className="space-y-3">
+                            <div className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest font-bold">
+                              Convergence Rationales:
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {Object.entries(item.rationales).map(([trend, rationale]) => (
+                                <div key={trend} className="bg-zinc-950 border border-zinc-900 p-3 rounded-lg hover:border-zinc-800 transition-colors">
+                                  <span className="text-[9px] font-mono text-brand-green font-bold uppercase tracking-wider block mb-1">
+                                    Thesis: {trend}
+                                  </span>
+                                  <p className="text-zinc-300 text-xs leading-relaxed italic">&quot;{rationale}&quot;</p>
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {Object.entries(item.rationales).map(([trend, rationale]) => (
-                              <div key={trend} className="bg-zinc-950 border border-zinc-900 p-3 rounded-lg hover:border-zinc-800 transition-colors">
-                                <span className="text-[9px] font-mono text-brand-green font-bold uppercase tracking-wider block mb-1">
-                                  Thesis: {trend}
-                                </span>
-                                <p className="text-zinc-300 text-xs leading-relaxed italic">&quot;{rationale}&quot;</p>
-                              </div>
-                            ))}
-                          </div>
+
+                          {/* Peers Comparison */}
+                          {peersViewTicker === item.ticker && (
+                            <div className="border-t border-zinc-900 pt-4">
+                              <PeersComparison
+                                ticker={item.ticker}
+                                stockPrice={item.stockPrice}
+                                marketCap={item.marketCap}
+                                peRatio={item.peRatio || null}
+                              />
+                            </div>
+                          )}
                         </div>
                       </td>
                     </tr>
