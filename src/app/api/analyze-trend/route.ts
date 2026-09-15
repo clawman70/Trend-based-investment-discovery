@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Call Gemini to analyze the trend
+    // Call Claude to analyze the trend
     const analysis = await analyzeTrendFromAI(trend.trim());
 
     // Cache the result

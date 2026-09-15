@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 import { POST as researchPOST } from '../app/api/research/route';
 import { POST as loadPOST } from '../app/api/research/load/route';
 import { memoryResearchScans, memoryResearchLoadedTheses } from '../lib/memoryStore';
-import * as claudeService from '../lib/claudeService';
+import * as geminiService from '../lib/geminiService';
 
 vi.mock('../lib/dbHelper', () => ({
   isDbAvailable: vi.fn().mockResolvedValue(false),
@@ -11,7 +11,7 @@ vi.mock('../lib/dbHelper', () => ({
   setCachedData: vi.fn(),
 }));
 
-vi.mock('../lib/claudeService', () => ({
+vi.mock('../lib/geminiService', () => ({
   generateTrendResearchReport: vi.fn(),
 }));
 
@@ -22,7 +22,7 @@ describe('Phase 5 — Automated Research Engine Tests', () => {
   beforeEach(() => {
     memoryResearchScans.length = 0;
     memoryResearchLoadedTheses.length = 0;
-    vi.mocked(claudeService.generateTrendResearchReport).mockReset();
+    vi.mocked(geminiService.generateTrendResearchReport).mockReset();
     delete process.env.DEMO_MODE;
   });
 
@@ -42,13 +42,13 @@ describe('Phase 5 — Automated Research Engine Tests', () => {
       expect(json.isDemo).toBe(true);
       expect(json.executiveSummary).toContain('[DEMO]');
       expect(json.candidateTheses[0].thesisStatement).toContain('converging with');
-      expect(claudeService.generateTrendResearchReport).not.toHaveBeenCalled();
+      expect(geminiService.generateTrendResearchReport).not.toHaveBeenCalled();
       expect(memoryResearchScans.length).toBe(1);
     });
 
-    it('should return 503 (not a mock report) when the Claude key is not configured', async () => {
-      vi.mocked(claudeService.generateTrendResearchReport).mockRejectedValue(
-        new Error('ANTHROPIC_API_KEY is not configured in .env.local')
+    it('should return 503 (not a mock report) when the Gemini key is not configured', async () => {
+      vi.mocked(geminiService.generateTrendResearchReport).mockRejectedValue(
+        new Error('GOOGLE_GENAI_API_KEY is not configured in .env.local')
       );
 
       const response = await scan({ domains: ['Energy & Power Systems'], mode: 'guided', customPrompt: null });
@@ -60,7 +60,7 @@ describe('Phase 5 — Automated Research Engine Tests', () => {
     });
 
     it('should return 502 (not a mock report) when the AI call fails', async () => {
-      vi.mocked(claudeService.generateTrendResearchReport).mockRejectedValue(new Error('Claude 500'));
+      vi.mocked(geminiService.generateTrendResearchReport).mockRejectedValue(new Error('Gemini 500'));
 
       const response = await scan({ domains: ['Energy & Power Systems'], mode: 'guided', customPrompt: null });
       expect(response.status).toBe(502);
@@ -81,7 +81,7 @@ describe('Phase 5 — Automated Research Engine Tests', () => {
     });
 
     it('should generate report for open prompts', async () => {
-      vi.mocked(claudeService.generateTrendResearchReport).mockResolvedValue({
+      vi.mocked(geminiService.generateTrendResearchReport).mockResolvedValue({
         isDemo: false,
         executiveSummary: 'Real summary',
         scanDate: '2026-09-15',

@@ -2,7 +2,7 @@
 
 A Bloomberg-style research terminal. You describe a market trend in plain English. The app then:
 
-1. **Researches** emerging cross-domain trends (Claude with live web search).
+1. **Researches** emerging cross-domain trends (Gemini with Google Search grounding).
 2. **Analyzes** a thesis (maturity, TAM, catalysts, risks).
 3. **Discovers** publicly traded companies that fit it (Claude).
 4. **Validates** every AI-suggested ticker against real US exchange listings and drops anything unlisted.
@@ -17,7 +17,8 @@ A Bloomberg-style research terminal. You describe a market trend in plain Englis
 
 | What | Source | Notes |
 |------|--------|-------|
-| AI analysis, discovery, research, sentiment | Claude (`claude-sonnet-5` by default) | Model is configurable with `CLAUDE_MODEL`. Research scans use the `web_search` tool; every citation is cross-checked against a real search result before it's shown — see `src/lib/claudeService.ts`. |
+| Discovery, trend analysis, news sentiment, value-chain | Claude (`claude-sonnet-5` by default) | Model configurable with `CLAUDE_MODEL`. See `src/lib/claudeService.ts`. |
+| Research tab (grounded trend scan) | Gemini (`gemini-3.8-flash` by default), with Google Search grounding | Model configurable with `GEMINI_MODEL`. Runs on Google's own search index — chosen specifically for this task because it's recency- and breadth-critical (last-30-days signals across patents, government filings, niche technical sources), which is more a search-index property than a reasoning one. Every citation is cross-checked against a real grounding result before it's shown — see `src/lib/geminiService.ts`. |
 | Ticker validation (hallucination gate) | Finnhub `/stock/symbol` (free) | Accepts NASDAQ, NYSE, NYSE American, NYSE Arca, Cboe BZX. Rejects OTC, ETFs, warrants, units. Cached 24h. |
 | Live price | Finnhub `/quote` (free) | Cached 5 min |
 | Market cap, P/E, revenue growth, debt/equity, free cash flow (est.) | Finnhub `/stock/metric` (free) | Cached 24h. FCF is derived as market cap ÷ price-to-FCF. |
@@ -44,14 +45,17 @@ Copy `.env.example` to `.env.local` and fill in:
 
 | Variable | Required | What it's for |
 |----------|----------|---------------|
-| `ANTHROPIC_API_KEY` | Yes | All AI features. Get it at [platform.claude.com](https://platform.claude.com). |
+| `ANTHROPIC_API_KEY` | Yes | Discovery, trend analysis, news sentiment, value-chain. Get it at [platform.claude.com](https://platform.claude.com). |
+| `GOOGLE_GENAI_API_KEY` | Yes | Research tab only. Get it at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). |
 | `FINNHUB_API_KEY` | Yes | Ticker validation, prices, fundamentals, news, peers. Get it at [finnhub.io/register](https://finnhub.io/register). |
-| `CLAUDE_MODEL` | No | Override the AI model (default `claude-sonnet-5`) |
+| `CLAUDE_MODEL` | No | Override the Claude model (default `claude-sonnet-5`) |
+| `GEMINI_MODEL` | No | Override the Gemini model (default `gemini-3.8-flash`) |
 | `DEMO_MODE` | No | `true` = serve clearly-labeled placeholder data when you have no keys |
 
 **What happens when a key is missing (and `DEMO_MODE` is off):**
 - **No Finnhub key:** a red banner says tickers weren't verified. Prices and fundamentals return a clear error, and the details window shows an error instead of fake data.
-- **No Claude key:** discovery and research return an error, and news sentiment shows "unavailable".
+- **No Claude key:** discovery, trend analysis and value-chain summaries return an error, and news sentiment shows "unavailable".
+- **No Gemini key:** the Research tab returns an error. Everything else still works.
 
 ### 3. Set up persistence (optional but recommended)
 Without a database the app still runs — the watchlist, portfolios, history and research scans just live in memory and reset every time the server restarts. To make them stick:
@@ -109,7 +113,7 @@ The tests mock every external API and the database, so they run offline and cost
 │   │   │   ├── company-details/       # Details window: profile + fundamentals + AI value chain
 │   │   │   ├── news/                  # Finnhub headlines + Claude sentiment
 │   │   │   ├── peers/                 # Finnhub peer comparison
-│   │   │   ├── research/              # Claude research scans (web_search tool)
+│   │   │   ├── research/              # Gemini research scans (Google Search grounding)
 │   │   │   ├── validate-ticker/       # Ticker validation endpoint
 │   │   │   └── watchlist/ portfolios/ history/ score/   # Saved items + composite scoring
 │   │   └── page.tsx                   # Main dashboard
@@ -118,7 +122,8 @@ The tests mock every external API and the database, so they run offline and cost
 │       ├── finnhubService.ts          # Rate-limited Finnhub client + metric normalization
 │       ├── yahooService.ts            # Yahoo price history + company profile
 │       ├── tickerValidator.ts         # Hallucination gate (Finnhub symbol directory)
-│       ├── claudeService.ts           # Claude prompts, structured outputs, web search grounding
+│       ├── claudeService.ts           # Claude: discovery, trend analysis, sentiment, value-chain
+│       ├── geminiService.ts           # Gemini: Research tab only, Google Search grounding
 │       ├── demoData.ts                # DEMO_MODE placeholder fixtures (labeled)
 │       ├── scoring.ts                 # Composite score
 │       ├── prisma.ts                  # Prisma client (Postgres, driver adapter)

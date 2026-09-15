@@ -1,29 +1,19 @@
 /**
- * Claude (Anthropic) client — powers trend analysis, company discovery, research scans,
- * news sentiment, and value-chain summaries.
+ * Claude (Anthropic) client — powers trend analysis, company discovery, news sentiment,
+ * and value-chain summaries. Everything *except* the Research tab's grounded trend scan,
+ * which runs on Gemini instead (see geminiService.ts) — that task hinges on live web
+ * search freshness/breadth more than reasoning quality, and Gemini's grounding runs on
+ * Google's own search index.
  *
  * Structured JSON responses use Claude's native structured outputs (Zod schema ->
  * `output_config.format` via `client.messages.parse()`), so there's no manual JSON
  * parsing/validation to get wrong. The SDK itself retries rate limits and transient
  * server errors (`maxRetries` below), so there's no hand-rolled backoff loop here.
- *
- * Research grounding: Claude has no built-in knowledge of anything after its training
- * cutoff, so `generateTrendResearchReport` uses the `web_search` server tool and then
- * cross-checks every cited URL against what the tool actually returned this turn —
- * a source whose URL wasn't in a real search result is dropped rather than trusted,
- * closing off the model just inventing a citation.
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
-import {
-  CandidateThesis,
-  DiscoveredCompany,
-  MentionedCompany,
-  Source,
-  TrendAnalysis,
-  TrendResearchReport,
-} from './types';
+import { DiscoveredCompany, TrendAnalysis } from './types';
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5';
@@ -74,40 +64,6 @@ const newsSentimentSchema = z.object({
   sentiment: z.enum(['Bullish', 'Bearish', 'Neutral']),
   sentimentScore: z.number().min(-1).max(1).describe('-1.0 (extreme bearish) to 1.0 (extreme bullish).'),
   summary: z.string().describe('A concise 1-2 sentence executive summary of the positive and negative news momentum.'),
-});
-
-// scanDate/domainsScanned/isDemo are set programmatically after the call, not asked of the model
-const researchReportSchema = z.object({
-  executiveSummary: z.string().describe('2-3 paragraph synthesis of emerging technologies and their convergence across the scanned domains.'),
-  candidateTheses: z.array(
-    z.object({
-      thesisStatement: z.string().describe('A clear, concise, actionable thesis statement suitable for discovery.'),
-      convergenceType: z.enum(['demand_supply', 'parallel_growth', 'regulatory_catalyst', 'technology_enablement']),
-      domainsInvolved: z.array(z.string()).describe('Which research domains intersect in this thesis.'),
-      recencySignal: z.string().describe('When this trend started emerging — must indicate a shift within the last 30 days.'),
-      maturity: z.enum(['Nascent', 'Pre-emergence', 'Early emergence']),
-      confidence: z.enum(['High', 'Medium', 'Speculative']),
-      rationale: z.string().describe('Why this convergence matters and what opportunity it presents.'),
-      sources: z.array(
-        z.object({
-          title: z.string(),
-          url: z.string().describe('Must be a URL returned by a web_search result this turn — never a URL you did not actually see.'),
-          date: z.string(),
-          sourceType: z.enum(['research_paper', 'news', 'social', 'video', 'patent', 'government']),
-        })
-      ),
-    })
-  ),
-  companiesMentioned: z.array(
-    z.object({
-      name: z.string(),
-      ticker: z.string(),
-      marketCapTier: z.enum(['micro', 'small', 'mid', 'large']).describe('micro < $300M, small $300M-$2B, mid $2B-$10B, large > $10B.'),
-      context: z.string().describe('Why the company is relevant to the convergence trend.'),
-      recentRally: z.boolean().describe('Whether the stock has rallied >30% in the last 6 months.'),
-    })
-  ),
-  adjacentSignals: z.array(z.string()).describe('Weak or early-stage signals that are not complete theses yet.'),
 });
 
 // ---------------------------------------------------------------------------
@@ -264,99 +220,4 @@ Give a concise, professional 1-sentence description (e.g., 'Upstream provider of
     console.error(`Error fetching value chain for ${ticker}:`, describeApiError(error));
     return null;
   }
-};
-
-// ---------------------------------------------------------------------------
-// Research report (grounded via the web_search server tool)
-// ---------------------------------------------------------------------------
-
-const RESEARCH_SYSTEM_PROMPT = `Role: You are a research analyst specializing in identifying emerging technology convergence trends for investment purposes. You focus on finding where demand signals in one industry intersect with supply capabilities in another.
-Constraints:
-- Only surface trends that have emerged or significantly accelerated in the past 30 days. Use web_search to check — your training data is not current.
-- Exclude any trend that has been widely covered for more than 180 days — if it is already consensus, it's priced in.
-- Prioritize cross-domain convergence over single-domain trends.
-- For any companies mentioned, flag their market cap tier (micro < $300M, small $300M-$2B, mid $2B-$10B, large > $10B) and check if they have rallied significantly (>30%) in the past 6 months.
-- Every source you cite must be a page you actually retrieved with web_search this turn. Never invent a source, a URL, or a publication date.`;
-
-/** Real web_search_result blocks seen anywhere in this turn, keyed by URL. Exported for tests. */
-export function collectSearchResults(content: Anthropic.ContentBlock[]): Map<string, { title: string; date: string }> {
-  const results = new Map<string, { title: string; date: string }>();
-  for (const block of content) {
-    if (block.type !== 'web_search_tool_result' || !Array.isArray(block.content)) continue;
-    for (const result of block.content) {
-      results.set(result.url, { title: result.title, date: result.page_age || '' });
-    }
-  }
-  return results;
-}
-
-/**
- * Drops any cited source whose URL wasn't actually returned by web_search this turn, and
- * overwrites title/date from the tool's own result — never from what the model re-typed —
- * so a hallucinated citation can't survive even if the URL happens to be real. Exported
- * for tests.
- */
-export function reconcileSources(theses: CandidateThesis[], realResults: Map<string, { title: string; date: string }>): CandidateThesis[] {
-  return theses.map((thesis) => ({
-    ...thesis,
-    sources: thesis.sources
-      .filter((source) => realResults.has(source.url))
-      .map((source): Source => {
-        const real = realResults.get(source.url)!;
-        return { ...source, title: real.title, date: real.date || source.date };
-      }),
-  }));
-}
-
-export const generateTrendResearchReport = async (
-  domains: string[],
-  mode: 'guided' | 'open',
-  customPrompt: string | null
-): Promise<TrendResearchReport> => {
-  // No mock fallback: failures propagate so the UI shows a real error instead of fake research.
-  // Placeholder reports are only served by the route when DEMO_MODE=true.
-  if (!isClaudeConfigured()) {
-    throw new Error('ANTHROPIC_API_KEY is not configured in .env.local');
-  }
-
-  const domainsStr = domains.join(', ');
-  const scanDateIso = new Date().toISOString().split('T')[0];
-
-  const prompt =
-    mode === 'open' && customPrompt
-      ? `What emerging convergence technology trends connect with: "${customPrompt}"?\nFocus on finding where demand signals in one industry intersect with supply capabilities in another.\n\nUse web_search to find sources from the last 30 days before answering.`
-      : `Perform an emerging technology scan for cross-domain convergence trends among the following research domains: [${domainsStr}].\nFocus on finding where demand signals in one domain intersect with supply capabilities in another, creating investment opportunities before the broader market recognizes them.\n\nUse web_search to find sources from the last 30 days before answering.`;
-
-  let response;
-  try {
-    response = await client.messages.parse({
-      model: CLAUDE_MODEL,
-      max_tokens: 8000,
-      system: RESEARCH_SYSTEM_PROMPT,
-      tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 8 }],
-      output_config: { format: zodOutputFormat(researchReportSchema), effort: 'high' },
-      messages: [{ role: 'user', content: prompt }],
-    });
-  } catch (error) {
-    console.error('Error generating trend research report:', describeApiError(error));
-    throw new Error(`Research scan failed: ${describeApiError(error)}`);
-  }
-
-  if (!response.parsed_output) {
-    throw new Error('Research scan failed: Claude returned a response that did not match the expected schema.');
-  }
-
-  const realSearchResults = collectSearchResults(response.content);
-  const result = response.parsed_output;
-
-  const report: TrendResearchReport = {
-    isDemo: false,
-    executiveSummary: result.executiveSummary,
-    scanDate: scanDateIso,
-    domainsScanned: domains,
-    candidateTheses: reconcileSources(result.candidateTheses, realSearchResults),
-    companiesMentioned: result.companiesMentioned as MentionedCompany[],
-    adjacentSignals: result.adjacentSignals,
-  };
-  return report;
 };

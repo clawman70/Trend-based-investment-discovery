@@ -353,7 +353,7 @@ export default function Home() {
             <span>TERMINAL STATUS: ONLINE</span>
           </div>
           <div className="flex items-center space-x-4">
-            <span>AI: CLAUDE</span>
+            <span>AI: CLAUDE + GEMINI (RESEARCH)</span>
             <span>DATA: FINNHUB + YAHOO FINANCE</span>
           </div>
         </div>
@@ -424,7 +424,7 @@ export default function Home() {
                   {loadingStep === 'analyzing'
                     ? 'Assessing estimated TAM size, triggers, and macro risks'
                     : loadingStep === 'discovering'
-                    ? 'Gemini is examining product convergence and relevance alignment'
+                    ? 'Claude is examining product convergence and relevance alignment'
                     : 'Calculating 1-year and 5-year growth fundamentals and parsing P/E valuations'}
                 </p>
               </div>
