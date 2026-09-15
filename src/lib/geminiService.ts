@@ -5,6 +5,13 @@ const apiKey = process.env.GOOGLE_GENAI_API_KEY;
 
 const ai = new GoogleGenAI({ apiKey: apiKey || 'PLACEHOLDER_API_KEY' });
 
+// Model is configurable so it can be swapped without code changes (see .env.example)
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+
+export function isGeminiConfigured(): boolean {
+  return !!apiKey && apiKey !== 'PLACEHOLDER_API_KEY';
+}
+
 /**
  * Retry helper with exponential backoff for rate-limited Gemini calls
  * Retries up to 3 times with delays: 1s, 2s, 4s
@@ -164,7 +171,7 @@ export const discoverCompaniesFromAI = async (
   return retryWithBackoff(async () => {
     try {
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: GEMINI_MODEL,
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -232,21 +239,10 @@ export interface NewsSentiment {
 export const analyzeNewsSentimentFromAI = async (
   ticker: string,
   headlines: string[]
-): Promise<NewsSentiment> => {
-  if (!apiKey || apiKey === 'PLACEHOLDER_API_KEY') {
-    return {
-      sentiment: "Neutral",
-      sentimentScore: 0.1,
-      summary: `AI sentiment evaluation is in offline fallback mode for ${ticker}. Headlines suggest stable operational adjustments.`
-    };
-  }
-
-  if (headlines.length === 0) {
-    return {
-      sentiment: "Neutral",
-      sentimentScore: 0.0,
-      summary: "No news articles found to perform AI sentiment analysis."
-    };
+): Promise<NewsSentiment | null> => {
+  // null means "no sentiment available" — never invent a neutral or bullish verdict
+  if (!isGeminiConfigured() || headlines.length === 0) {
+    return null;
   }
 
   const prompt = `Analyze the following stock news headlines for ticker "${ticker}". Assign an overall sentiment (one of: 'Bullish', 'Bearish', 'Neutral'), a sentiment score between -1.0 (extreme bearish) and 1.0 (extreme bullish), and write a concise 1-2 sentence executive summary of the positive and negative news momentum.
@@ -270,11 +266,7 @@ ${headlines.map((h, i) => `${i + 1}. ${h}`).join('\n')}
     return result as NewsSentiment;
   } catch (error) {
     console.error(`Error calling Gemini API for news sentiment on ${ticker}:`, error);
-    return {
-      sentiment: "Neutral",
-      sentimentScore: 0.0,
-      summary: "Failed to evaluate sentiment via AI. Defaulting to neutral."
-    };
+    return null;
   }
 };
 
@@ -284,9 +276,9 @@ export const getValueChainPositionFromAI = async (
   sector: string,
   industry: string,
   trend: string
-): Promise<string> => {
-  if (!apiKey || apiKey === 'PLACEHOLDER_API_KEY') {
-    return `Midstream supplier of specialized applications within ${industry} for the ${trend} trend.`;
+): Promise<string | null> => {
+  if (!isGeminiConfigured()) {
+    return null;
   }
   
   const prompt = `Identify where the company "${companyName}" (ticker: ${ticker}, sector: ${sector}, industry: ${industry}) sits in the industry value chain for the following market trend: "${trend}".
@@ -300,10 +292,10 @@ Give a concise, professional 1-sentence description (e.g., 'Upstream provider of
         temperature: 0.2,
       } as unknown as Record<string, unknown>,
     });
-    return response.text?.trim() || `Positioned in the ${trend} value chain.`;
+    return response.text?.trim() || null;
   } catch (err) {
     console.error(`Error fetching value chain for ${ticker}:`, err);
-    return `Positioned in the ${trend} value chain.`;
+    return null;
   }
 };
 
@@ -420,96 +412,19 @@ const trendResearchReportSchema = {
   ],
 };
 
-const getMockResearchReport = (
-  domains: string[],
-  mode: 'guided' | 'open',
-  customPrompt: string | null
-): TrendResearchReport => {
-  const scanDateIso = new Date().toISOString().split('T')[0];
-  const list = domains.length > 0 ? domains : ["Advanced Compute", "Energy Grid Systems", "Physical AI"];
-
-  const summary = `Offline Scan completed in ${mode} mode${customPrompt ? ` with prompt "${customPrompt}"` : ''} for domains: ${list.join(", ")}. In the last 30 days, we detect significant signals suggesting a convergence in materials synthesis, power grid distribution, and custom packaging architectures. The intersection of highly dense compute topologies with local clean energy infrastructure is driving the emergence of grid-independent data pods, while advanced composite developments allow soft robotic applications in healthcare logistics to cross critical torque-to-weight thresholds.`;
-
-  return {
-    executiveSummary: summary,
-    scanDate: scanDateIso,
-    domainsScanned: list,
-    candidateTheses: [
-      {
-        thesisStatement: `${list[0] || 'Compute'} converging with ${list[1] || 'Energy'} for localized energy harvesting`,
-        convergenceType: "technology_enablement",
-        domainsInvolved: [list[0] || 'Compute', list[1] || 'Energy'],
-        recencySignal: "Emerging patent filings and pilot programs launched early this month.",
-        maturity: "Pre-emergence",
-        confidence: "Medium",
-        rationale: "Decentralized compute architectures require reliable power topologies. Deploying local small modular reactors alongside custom ASIC pipelines yields massive latency reductions.",
-        sources: [
-          {
-            title: "Grounded Convergence in Local Power Infrastructure",
-            url: "https://example.com/source1",
-            date: "2026-05-10",
-            sourceType: "research_paper"
-          },
-          {
-            title: "National Grid Advanced Computing Catalysts",
-            url: "https://example.com/source2",
-            date: "2026-05-15",
-            sourceType: "news"
-          }
-        ]
-      },
-      {
-        thesisStatement: `Low-cost satellite LEO arrays providing edge AI orchestration for dual-use national security`,
-        convergenceType: "demand_supply",
-        domainsInvolved: ["Space Technology", "Artificial Intelligence", "Defense Technology"],
-        recencySignal: "Joint defense funding specifications released 12 days ago.",
-        maturity: "Nascent",
-        confidence: "High",
-        rationale: "Commercial LEO satellite constellations are transitioning from raw sensor telemetry relays to high-altitude edge computation platforms, bypassing vulnerable terrestrial landlines.",
-        sources: [
-          {
-            title: "LEO Constellations for Autonomous In-Flight Compute",
-            url: "https://example.com/source3",
-            date: "2026-05-12",
-            sourceType: "patent"
-          }
-        ]
-      }
-    ],
-    companiesMentioned: [
-      {
-        name: "AeroVironment",
-        ticker: "AVAV",
-        marketCapTier: "mid",
-        context: "Providing high-altitude long-endurance UAS that serve as edge compute relays.",
-        recentRally: false
-      },
-      {
-        name: "Oklo Inc.",
-        ticker: "OKLO",
-        marketCapTier: "small",
-        context: "Siting fast-fission micro-reactors directly at hyper-scaler compute campuses.",
-        recentRally: true
-      }
-    ],
-    adjacentSignals: [
-      "Perovskite solar cell integration on unmanned aerial systems for indefinite flight times.",
-      "Post-quantum cryptographical microchips appearing in consumer smart wearables."
-    ]
-  };
-};
-
 export const generateTrendResearchReport = async (
   domains: string[],
   mode: 'guided' | 'open',
   customPrompt: string | null
 ): Promise<TrendResearchReport> => {
+  // No mock fallback: failures propagate so the UI shows a real error instead of fake research.
+  // Placeholder reports are only served by the route when DEMO_MODE=true.
+  if (!isGeminiConfigured()) {
+    throw new Error("GOOGLE_GENAI_API_KEY is not configured in .env.local");
+  }
+
   const domainsStr = domains.join(", ");
   const scanDateIso = new Date().toISOString().split('T')[0];
-
-  if (!apiKey || apiKey === 'PLACEHOLDER_API_KEY') {
-    return getMockResearchReport(domains, mode, customPrompt);
-  }
 
   let prompt = "";
   if (mode === 'open' && customPrompt) {
@@ -531,9 +446,9 @@ Constraints:
 
   const fullPrompt = `${systemInstruction}\n\nSearch Context & Scanned Domains: [${domainsStr}]\nInput Prompt: ${prompt}`;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+  const response = await retryWithBackoff(() =>
+    ai.models.generateContent({
+      model: GEMINI_MODEL,
       contents: fullPrompt,
       config: {
         responseMimeType: "application/json",
@@ -541,16 +456,17 @@ Constraints:
         tools: [{ googleSearch: {} }],
         temperature: 0.2,
       } as unknown as Record<string, unknown>,
-    });
+    })
+  );
 
-    const jsonString = response.text?.trim() || "{}";
-    const result = JSON.parse(jsonString) as TrendResearchReport;
-    result.scanDate = scanDateIso;
-    result.domainsScanned = domains;
-    return result;
-  } catch (error) {
-    console.error("Error generating trend research report:", error);
-    return getMockResearchReport(domains, mode, customPrompt);
+  const jsonString = response.text?.trim();
+  if (!jsonString) {
+    throw new Error("Research scan failed: Gemini returned an empty response.");
   }
-};
 
+  const result = JSON.parse(jsonString) as TrendResearchReport;
+  result.scanDate = scanDateIso;
+  result.domainsScanned = domains;
+  result.isDemo = false;
+  return result;
+};

@@ -7,11 +7,7 @@ import {
   MemoryTrendPortfolio,
   MemoryPortfolioItem,
 } from '@/lib/memoryStore';
-
-interface FMPQuote {
-  symbol?: string;
-  price?: number;
-}
+import { fetchQuotes, isFinnhubConfigured } from '@/lib/finnhubService';
 
 export async function GET() {
   try {
@@ -42,45 +38,38 @@ export async function GET() {
       }
     }
 
+    // Live current prices from Finnhub. A missing price stays null — never fall back to cost basis.
     const priceMap = new Map<string, number>();
-    const apiKey = process.env.FMP_API_KEY;
     const tickersArr = Array.from(allTickers);
 
-    if (apiKey && apiKey !== 'PLACEHOLDER_API_KEY' && tickersArr.length > 0) {
+    if (isFinnhubConfigured() && tickersArr.length > 0) {
       try {
-        const batchTickersStr = tickersArr.join(',');
-        const quoteUrl = `https://financialmodelingprep.com/api/v3/quote/${batchTickersStr}?apikey=${apiKey}`;
-        const quoteResponse = await fetch(quoteUrl);
-
-        if (quoteResponse.ok) {
-          const quotes = (await quoteResponse.json()) as FMPQuote[];
-          if (Array.isArray(quotes)) {
-            for (const q of quotes) {
-              if (q.symbol && q.price !== undefined) {
-                priceMap.set(q.symbol.toUpperCase(), Number(q.price));
-              }
-            }
-          }
-        }
+        const quotes = await fetchQuotes(tickersArr);
+        quotes.forEach((quote, symbol) => priceMap.set(symbol, quote.c));
       } catch (err) {
-        console.error("Failed to fetch live prices for portfolios, using cost basis fallbacks:", err);
+        console.error('Failed to fetch live prices for portfolios:', err);
       }
     }
 
     const portfolios = rawPortfolios.map((port) => {
+      // Totals only include items that have both a cost basis and a live price
       let totalCostBasis = 0;
       let totalCurrentValue = 0;
+      let unpricedCount = 0;
 
       const itemsList = port.items.map((item) => {
         const wl = item.watchlist;
-        const currentPrice = priceMap.get(wl.ticker.toUpperCase()) || wl.priceAtAdd;
-        const costBasis = wl.priceAtAdd;
-        const gainLossPercent = wl.priceAtAdd > 0
+        const currentPrice = priceMap.get(wl.ticker.toUpperCase()) ?? null;
+        const gainLossPercent = currentPrice !== null && wl.priceAtAdd > 0
           ? ((currentPrice - wl.priceAtAdd) / wl.priceAtAdd) * 100
-          : 0;
+          : null;
 
-        totalCostBasis += costBasis;
-        totalCurrentValue += currentPrice;
+        if (currentPrice !== null && wl.priceAtAdd > 0) {
+          totalCostBasis += wl.priceAtAdd;
+          totalCurrentValue += currentPrice;
+        } else {
+          unpricedCount += 1;
+        }
 
         return {
           id: item.id,
@@ -105,6 +94,7 @@ export async function GET() {
         createdAt: port.createdAt,
         totalCostBasis,
         totalCurrentValue,
+        unpricedCount,
         gainLossPercent: portfolioGainLossPercent,
         items: itemsList,
       };

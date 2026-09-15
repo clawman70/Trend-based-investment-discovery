@@ -10,12 +10,10 @@
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
-    "axios": "^1.18.1",
-    "finnhub": "^2.0.15",
     "next": "15.5.18",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "yfinance": "^0.0.6"
+    "yahoo-finance2": "4.0.2"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

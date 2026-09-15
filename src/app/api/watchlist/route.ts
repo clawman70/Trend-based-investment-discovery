@@ -4,11 +4,7 @@ import {
   memoryWatchlistItems,
   MemoryWatchlistItem,
 } from '@/lib/memoryStore';
-
-interface FMPQuote {
-  symbol?: string;
-  price?: number;
-}
+import { fetchQuotes, isFinnhubConfigured } from '@/lib/finnhubService';
 
 export async function GET() {
   try {
@@ -20,38 +16,25 @@ export async function GET() {
       return NextResponse.json([]);
     }
 
-    // Dynamic current price lookup using FMP batch quotes
+    // Live current prices from Finnhub. A missing price stays null — never fall back to cost basis.
     const tickers = items.map((item) => item.ticker.trim().toUpperCase());
-    const apiKey = process.env.FMP_API_KEY;
     const priceMap = new Map<string, number>();
 
-    if (apiKey && apiKey !== 'PLACEHOLDER_API_KEY' && tickers.length > 0) {
+    if (isFinnhubConfigured()) {
       try {
-        const batchTickersStr = tickers.join(',');
-        const quoteUrl = `https://financialmodelingprep.com/api/v3/quote/${batchTickersStr}?apikey=${apiKey}`;
-        const quoteResponse = await fetch(quoteUrl);
-
-        if (quoteResponse.ok) {
-          const quotes = (await quoteResponse.json()) as FMPQuote[];
-          if (Array.isArray(quotes)) {
-            for (const q of quotes) {
-              if (q.symbol && q.price !== undefined) {
-                priceMap.set(q.symbol.toUpperCase(), Number(q.price));
-              }
-            }
-          }
-        }
+        const quotes = await fetchQuotes(tickers);
+        quotes.forEach((quote, symbol) => priceMap.set(symbol, quote.c));
       } catch (err) {
-        console.error("Failed to fetch live prices for watchlist, using fallbacks:", err);
+        console.error('Failed to fetch live prices for watchlist:', err);
       }
     }
 
     // Assemble watchlist results with gain/loss % calculations
     const enrichedWatchlist = items.map((item) => {
-      const currentPrice = priceMap.get(item.ticker.toUpperCase()) || item.priceAtAdd;
-      const gainLossPercent = item.priceAtAdd > 0
+      const currentPrice = priceMap.get(item.ticker.toUpperCase()) ?? null;
+      const gainLossPercent = currentPrice !== null && item.priceAtAdd > 0
         ? ((currentPrice - item.priceAtAdd) / item.priceAtAdd) * 100
-        : 0;
+        : null;
 
       return {
         ...item,

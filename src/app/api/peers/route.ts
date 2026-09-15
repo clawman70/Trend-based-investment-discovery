@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCachedData, setCachedData } from '@/lib/dbHelper';
 import { getPeersForTicker, PeerCompany } from '@/lib/peersService';
 
-const CACHE_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour (includes live prices)
 
 export async function GET(request: NextRequest) {
   try {

@@ -11,19 +11,23 @@ export interface DiscoveredCompany {
   relevanceScore: number; // AI-assigned 1-10 relevance
 }
 
+/** Google Finance exchange codes (also used for display). */
+export type Exchange = 'NASDAQ' | 'NYSE' | 'NYSEAMERICAN' | 'NYSEARCA' | 'BATS';
+
 export interface DataQuality {
   priceSource: 'live' | 'unavailable';
   growthSource?: 'calculated' | 'insufficient_history' | 'unavailable';
+  fundamentalsSource?: 'live' | 'unavailable';
 }
 
 export interface CompanyData extends DiscoveredCompany {
-  stockPrice: number;
-  marketCap: number;
-  exchange: 'NASDAQ' | 'NYSE';
+  stockPrice: number; // 0 = unavailable
+  marketCap: number; // 0 = unavailable
+  exchange: Exchange | null; // null = unknown
   dataQuality: DataQuality;
   peRatio?: number | null;
-  growth1Y?: number;
-  growth5Y?: number;
+  growth1Y?: number | null; // percent; null = unavailable
+  growth5Y?: number | null; // percent; null = unavailable
   debtToEquity?: number | null;
 }
 
@@ -77,6 +81,7 @@ export interface MentionedCompany {
 }
 
 export interface TrendResearchReport {
+  isDemo?: boolean; // true only for DEMO_MODE placeholder reports
   executiveSummary: string;
   scanDate: string;
   domainsScanned: string[];

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { getCachedData, setCachedData } from '@/lib/dbHelper';
 import { discoverCompaniesFromAI } from '@/lib/geminiService';
-import { validateTickers } from '@/lib/tickerValidator';
+import { normalizeTicker, validateTickers } from '@/lib/tickerValidator';
 import { DiscoveredCompany } from '@/lib/types';
 
 const CACHE_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -71,7 +71,8 @@ export async function POST(request: NextRequest) {
       }
 
       for (const c of companies) {
-        const upperTicker = c.ticker.trim().toUpperCase();
+        // Same normalization as the validator (e.g. BRK-B -> BRK.B) so gate lookups match
+        const upperTicker = normalizeTicker(c.ticker);
         if (!allDiscovered[upperTicker]) {
           allDiscovered[upperTicker] = {
             ticker: upperTicker,
@@ -88,7 +89,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 2. Validate all unique tickers across our NYSE/NASDAQ directory
+    // 2. Validate all unique tickers against the Finnhub US exchange listing directory
     // This is the HALLUCINATION GATE: Drops invalid/fake tickers before enrichment
     const validation = await validateTickers(Array.from(uniqueTickers));
     const validTickersSet = new Set(validation.valid);
@@ -99,7 +100,7 @@ export async function POST(request: NextRequest) {
       );
     }
     if (validation.bypassed) {
-      console.warn('[Validation Gate] Ticker validation was bypassed (FMP API unavailable or not configured)');
+      console.warn('[Validation Gate] Ticker validation was bypassed (Finnhub symbol directory unavailable or not configured)');
     }
 
     // 3. Construct convergence records
@@ -122,7 +123,7 @@ export async function POST(request: NextRequest) {
           rationales: c.rationales,
           stockPrice: 0,
           marketCap: 0,
-          exchange: 'NASDAQ' as const,
+          exchange: null, // filled in by /api/enrich from the listing directory
           dataQuality: {
             priceSource: 'unavailable' as const,
           },

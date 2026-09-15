@@ -94,7 +94,8 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({ onReportGenerated 
       });
 
       if (!res.ok) {
-        throw new Error('Research scan failed. Please check connection and keys.');
+        const errJson = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errJson.error || 'Research scan failed. Please check connection and keys.');
       }
 
       const report = await res.json();

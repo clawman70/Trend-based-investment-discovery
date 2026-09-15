@@ -6,8 +6,8 @@ interface WatchlistItem {
   companyName: string;
   addedAt: string;
   priceAtAdd: number;
-  currentPrice: number;
-  gainLossPercent: number;
+  currentPrice: number | null; // null = live price unavailable
+  gainLossPercent: number | null;
   notes: string | null;
   tags: string[];
 }
@@ -251,21 +251,29 @@ export const WatchlistView: React.FC<WatchlistViewProps> = ({ isActive, onInspec
 
                     {/* Current Price */}
                     <td className="px-4 py-4 whitespace-nowrap font-mono text-zinc-200">
-                      ${item.currentPrice.toFixed(2)}
+                      {item.currentPrice !== null ? (
+                        `$${item.currentPrice.toFixed(2)}`
+                      ) : (
+                        <span className="text-zinc-600 italic">N/A</span>
+                      )}
                     </td>
 
                     {/* Return Yield */}
                     <td className="px-4 py-4 whitespace-nowrap font-mono">
-                      <span
-                        className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                          item.gainLossPercent >= 0
-                            ? 'text-emerald-400 bg-emerald-950/40 border border-emerald-900/40'
-                            : 'text-rose-400 bg-rose-950/40 border border-rose-900/40'
-                        }`}
-                      >
-                        {item.gainLossPercent >= 0 ? '+' : ''}
-                        {item.gainLossPercent.toFixed(1)}%
-                      </span>
+                      {item.gainLossPercent !== null ? (
+                        <span
+                          className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                            item.gainLossPercent >= 0
+                              ? 'text-emerald-400 bg-emerald-950/40 border border-emerald-900/40'
+                              : 'text-rose-400 bg-rose-950/40 border border-rose-900/40'
+                          }`}
+                        >
+                          {item.gainLossPercent >= 0 ? '+' : ''}
+                          {item.gainLossPercent.toFixed(1)}%
+                        </span>
+                      ) : (
+                        <span className="text-zinc-600 italic text-[11px]">N/A</span>
+                      )}
                     </td>
 
                     {/* Tags & Portfolio linkage */}

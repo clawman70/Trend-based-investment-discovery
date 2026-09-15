@@ -147,7 +147,11 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTicke
                       <div className="font-bold text-brand-text text-sm">{item.companyName}</div>
                       <div className="flex items-center gap-2 mt-1">
                         <a
-                          href={`https://www.google.com/finance?q=${item.exchange}:${item.ticker}`}
+                          href={
+                            item.exchange
+                              ? `https://www.google.com/finance/quote/${item.ticker}:${item.exchange}`
+                              : `https://www.google.com/finance?q=${item.ticker}`
+                          }
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()} // Prevent expand toggle when clicking link
@@ -158,7 +162,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTicke
                           <span className="text-[10px] text-brand-light/50">↗</span>
                         </a>
                         <a
-                          href={`https://finance.yahoo.com/quote/${item.ticker}`}
+                          href={`https://finance.yahoo.com/quote/${item.ticker.replace(/\./g, '-')}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-[10px] font-mono text-brand-light/60 hover:text-brand-green border border-zinc-800 hover:border-brand-green bg-zinc-950/40 px-1.5 py-0.5 rounded inline-block"
@@ -200,14 +204,26 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTicke
                         : <span className="text-zinc-600 italic">N/A</span>}
                     </td>
 
+                    {/* 1Y Price Growth */}
+                    <td className="px-4 py-4.5 font-mono text-xs">
+                      {item.growth1Y !== null && item.growth1Y !== undefined ? (
+                        <span className={item.growth1Y >= 0 ? 'text-brand-green' : 'text-brand-red'}>
+                          {item.growth1Y >= 0 ? '+' : ''}
+                          {item.growth1Y.toFixed(1)}%
+                        </span>
+                      ) : (
+                        <span className="text-zinc-600 italic">N/A</span>
+                      )}
+                    </td>
+
                     {/* Current Price */}
                     <td className={`px-4 py-4.5 font-mono text-xs ${isUnavailable ? 'text-brand-yellow/60 italic' : 'text-brand-text'}`}>
                       {isUnavailable ? 'N/A' : formatCurrency(item.stockPrice)}
                     </td>
 
-                    {/* Market Cap */}
-                    <td className={`px-4 py-4.5 font-mono text-xs ${isUnavailable ? 'text-brand-yellow/60 italic' : 'text-brand-text'}`}>
-                      {isUnavailable ? 'N/A' : formatMarketCap(item.marketCap)}
+                    {/* Market Cap (comes from fundamentals, independent of the price feed) */}
+                    <td className={`px-4 py-4.5 font-mono text-xs ${item.marketCap > 0 ? 'text-brand-text' : 'text-brand-yellow/60 italic'}`}>
+                      {formatMarketCap(item.marketCap)}
                     </td>
 
                     {/* Data Quality Badge */}
@@ -293,6 +309,7 @@ const tableHeaders: { key: keyof ScoredCompanyData; label: string }[] = [
   { key: 'companyName', label: 'Company' },
   { key: 'convergenceScore', label: 'Overlap' },
   { key: 'peRatio', label: 'P/E' },
+  { key: 'growth1Y', label: '1Y' },
   { key: 'stockPrice', label: 'Price' },
   { key: 'marketCap', label: 'Mkt Cap' },
 ];

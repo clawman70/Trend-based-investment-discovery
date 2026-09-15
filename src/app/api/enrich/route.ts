@@ -1,23 +1,84 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCachedData, setCachedData } from '@/lib/dbHelper';
-import { getFinnhubService } from '@/lib/finnhubService';
-import { getYFinanceService } from '@/lib/yfinanceService';
+import {
+  fetchMetrics,
+  fetchQuote,
+  FinnhubMetrics,
+  FinnhubQuote,
+  isFinnhubConfigured,
+  normalizeMetrics,
+} from '@/lib/finnhubService';
+import { fetchPriceGrowth, PriceHistoryGrowth } from '@/lib/yahooService';
+import { getListing, normalizeTicker } from '@/lib/tickerValidator';
+import { DataQuality, Exchange } from '@/lib/types';
 
-const CACHE_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+// Prices go stale fast; fundamentals and multi-year growth don't
+const QUOTE_CACHE_MS = 5 * 60 * 1000;
+const FUNDAMENTALS_CACHE_MS = 24 * 60 * 60 * 1000;
 
-interface EnrichedData {
+export interface EnrichedData {
   ticker: string;
-  companyName: string;
-  stockPrice: number;
-  marketCap: number;
-  exchange: 'NASDAQ' | 'NYSE';
-  growth1Y: number;
-  growth5Y: number;
-  dataQuality: {
-    priceSource: 'live' | 'unavailable';
-    growthSource: 'calculated' | 'insufficient_history' | 'unavailable';
-  };
+  stockPrice: number; // 0 = unavailable
+  marketCap: number; // 0 = unavailable
+  exchange: Exchange | null;
   peRatio: number | null;
+  debtToEquity: number | null;
+  growth1Y: number | null;
+  growth5Y: number | null;
+  dataQuality: DataQuality;
+}
+
+/** Runs a fetcher with read-through caching. Failures and empty results are never cached. */
+async function cached<T>(key: string, type: string, ttlMs: number, fetcher: () => Promise<T | null>): Promise<T | null> {
+  const hit = (await getCachedData(key)) as T | null;
+  if (hit) return hit;
+  try {
+    const value = await fetcher();
+    if (value) await setCachedData(key, type, value, ttlMs);
+    return value;
+  } catch (err) {
+    console.warn(`[Enrich] ${key} failed:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+async function enrichTicker(ticker: string): Promise<EnrichedData> {
+  const [quote, metrics, listing] = await Promise.all([
+    cached<FinnhubQuote>(`quote:${ticker}`, 'financial', QUOTE_CACHE_MS, () => fetchQuote(ticker)),
+    cached<FinnhubMetrics>(`metrics:${ticker}`, 'financial', FUNDAMENTALS_CACHE_MS, () => fetchMetrics(ticker)),
+    getListing(ticker),
+  ]);
+
+  const stockPrice = quote?.c ?? 0;
+  const fundamentals = normalizeMetrics(metrics);
+
+  let growth: PriceHistoryGrowth | null = null;
+  if (stockPrice > 0) {
+    growth = await cached<PriceHistoryGrowth>(`growth:${ticker}`, 'financial', FUNDAMENTALS_CACHE_MS, async () => {
+      const result = await fetchPriceGrowth(ticker, stockPrice);
+      return result.growthSource === 'calculated' ? result : null;
+    });
+  }
+
+  // If Yahoo history is unavailable, fall back to Finnhub's 52-week price return for 1Y
+  const growth1Y = growth?.growth1Y ?? fundamentals.priceReturn52Week;
+  const growth5Y = growth?.growth5Y ?? null;
+
+  return {
+    ticker,
+    stockPrice,
+    marketCap: fundamentals.marketCap ?? 0,
+    exchange: listing?.exchange ?? null,
+    peRatio: fundamentals.peRatio,
+    debtToEquity: fundamentals.debtToEquity,
+    growth1Y,
+    growth5Y,
+    dataQuality: {
+      priceSource: stockPrice > 0 ? 'live' : 'unavailable',
+      growthSource: growth1Y !== null ? 'calculated' : stockPrice > 0 ? 'insufficient_history' : 'unavailable',
+      fundamentalsSource: metrics ? 'live' : 'unavailable',
+    },
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -29,88 +90,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Tickers array is required' }, { status: 400 });
     }
 
-    const resultsMap = new Map<string, EnrichedData>();
-    const uncachedTickers: string[] = [];
-
-    // 1. Check cache first
-    for (const ticker of tickers) {
-      const upperTicker = ticker.trim().toUpperCase();
-      const cached = (await getCachedData(`financial:${upperTicker}`)) as EnrichedData | null;
-      if (cached) {
-        resultsMap.set(upperTicker, cached);
-      } else {
-        uncachedTickers.push(upperTicker);
-      }
+    if (!isFinnhubConfigured()) {
+      return NextResponse.json(
+        { error: 'FINNHUB_API_KEY is not configured in .env.local — live prices and fundamentals are unavailable.' },
+        { status: 503 }
+      );
     }
 
-    // 2. Fetch real-time quotes from Finnhub (respects 60 calls/min rate limit)
-    if (uncachedTickers.length > 0) {
-      try {
-        const finnhubService = getFinnhubService();
-        const finnhubQuotes = await finnhubService.fetchBatchQuotes(uncachedTickers);
+    const normalized = tickers.map(normalizeTicker);
+    const unique = Array.from(new Set(normalized));
+    const enriched = await Promise.all(unique.map(enrichTicker));
+    const byTicker = new Map(enriched.map((e) => [e.ticker, e]));
 
-        if (finnhubQuotes.size > 0) {
-          // 3. Fetch historical growth data from yfinance
-          const yfinanceService = getYFinanceService();
-          const tickersForHistory = Array.from(finnhubQuotes.values()).map((q) => ({
-            ticker: q.ticker,
-            currentPrice: q.stockPrice,
-          }));
-
-          const historicalData = await yfinanceService.fetchBatchHistoricalData(tickersForHistory);
-
-          // 4. Merge Finnhub quotes with yfinance historical data
-          for (const [ticker, finnhubQuote] of finnhubQuotes) {
-            const historical = historicalData.get(ticker);
-
-            const enrichedRecord: EnrichedData = {
-              ticker,
-              companyName: ticker, // Finnhub doesn't provide company name in quote endpoint
-              stockPrice: finnhubQuote.stockPrice,
-              marketCap: finnhubQuote.marketCap, // Will be 0 for now (would need separate Finnhub call)
-              exchange: (finnhubQuote.exchange as 'NASDAQ' | 'NYSE') || 'NASDAQ',
-              growth1Y: historical?.growth1Y ?? 0,
-              growth5Y: historical?.growth5Y ?? 0,
-              dataQuality: {
-                priceSource: finnhubQuote.stockPrice > 0 ? 'live' : 'unavailable',
-                growthSource: historical?.growthSource ?? 'unavailable',
-              },
-              peRatio: finnhubQuote.peRatio,
-            };
-
-            resultsMap.set(ticker, enrichedRecord);
-            await setCachedData(`financial:${ticker}`, 'financial', enrichedRecord, CACHE_DURATION_MS);
-          }
-        }
-      } catch (err) {
-        console.error('Finnhub/yfinance enrichment failed:', err);
-      }
-    }
-
-    // 5. Mark any remaining tickers as unavailable
-    for (const ticker of uncachedTickers) {
-      if (!resultsMap.has(ticker)) {
-        resultsMap.set(ticker, {
-          ticker,
-          companyName: ticker,
-          stockPrice: 0,
-          marketCap: 0,
-          exchange: 'NASDAQ',
-          growth1Y: 0,
-          growth5Y: 0,
-          dataQuality: {
-            priceSource: 'unavailable',
-            growthSource: 'unavailable',
-          },
-          peRatio: null,
-        });
-      }
-    }
-
-    // Assemble results in the original requested order
-    const orderedResults = tickers.map((t) => resultsMap.get(t.trim().toUpperCase())!);
-
-    return NextResponse.json(orderedResults);
+    // Preserve the caller's order
+    return NextResponse.json(normalized.map((t) => byTicker.get(t)!));
   } catch (error: unknown) {
     console.error('Error in enrich route:', error);
     const errorMessage = error instanceof Error ? error.message : 'Internal Server Error';

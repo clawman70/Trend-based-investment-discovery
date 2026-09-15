@@ -8,9 +8,10 @@ import * as tickerValidator from '../lib/tickerValidator';
 import { calculateCompanyScores } from '../lib/scoring';
 import { ScoredCompanyData } from '../lib/types';
 
-vi.mock('../lib/tickerValidator', () => ({
-  validateTickers: vi.fn(),
-}));
+vi.mock('../lib/tickerValidator', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/tickerValidator')>();
+  return { ...actual, validateTickers: vi.fn() };
+});
 
 vi.mock('../lib/geminiService', () => ({
   discoverCompaniesFromAI: vi.fn(),

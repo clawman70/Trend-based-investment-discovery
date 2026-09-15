@@ -1,95 +1,121 @@
-# Trend-Based Investment Discovery Engine (v2.0 Rebuild)
+# Trend-Based Investment Discovery Engine
 
-A professional Bloomberg-style research terminal that takes a user's market trend thesis in natural language, discovers publicly traded company candidates using Gemini 3.5 Flash, validates tickers against live directories to drop hallucinations, and enriches them with historical fundamentals from the Financial Modeling Prep (FMP) API.
+A Bloomberg-style research terminal. You describe a market trend in plain English. The app then:
 
----
+1. **Researches** emerging cross-domain trends (Gemini with Google Search grounding).
+2. **Analyzes** a thesis (maturity, TAM, catalysts, risks).
+3. **Discovers** publicly traded companies that fit it (Gemini).
+4. **Validates** every AI-suggested ticker against real US exchange listings and drops anything unlisted.
+5. **Enriches** the survivors with live price, market cap, P/E, debt-to-equity and 1Y/5Y price growth.
+6. **Scores** and ranks them, and lets you save them to a watchlist and portfolios.
 
-## Key Features
-
-1. **Server-Side API Proxying**: Fixes v1 credentials exposure. All keys are kept server-side in `.env.local` and proxied behind Next.js Route Handlers.
-2. **AI Discovery with Reasoning**: Queries `gemini-3.5-flash` utilizing the new `thinkingLevel: "medium"` parameter to identify direct and adjacent candidate companies in a structured JSON schema.
-3. **Ticker Validation Pipeline**: Cross-references Gemini-returned symbols against a cached master directory of NYSE/NASDAQ active listings (`/api/v3/stock/list`), dropping hallucinations before financial enrichment.
-4. **Resilient Local Development (DB Fallback)**: If no database URL is supplied in `.env.local`, the server logs a warning and automatically falls back to an in-memory caching engine, permitting testing without active PostgreSQL.
-5. **Data Quality Integrity Flags**: Distinct badges (`Live Price`, `Growth Live`, `Partial Growth`, `Growth N/A`) represent the veracity and source of all metrics. Omitted fake analyst and price target columns.
-6. **Bloomberg Terminal Aesthetic**: Sleek slate-dark palette, responsive glassmorphism input forms, Outfit sans-serif typeface, micro-animations, column sorting, and CSV results exporter.
+> **Data integrity rule:** every number on screen is real or shown as **N/A**. The app never fills gaps with made-up values. Placeholder data exists only when you explicitly turn on `DEMO_MODE`, and it is labeled **DEMO** everywhere it appears.
 
 ---
 
-## Directory Architecture
+## Data Sources
 
-```text
-├── Documents/
-│   └── Trend-Discovery-2.0-Requirements.md  # Core Spec (Source of Truth)
-├── src/
-│   ├── app/
-│   │   ├── api/
-│   │   │   ├── discover/route.ts            # Gemini scan & validate pipeline
-│   │   │   ├── enrich/route.ts              # FMP quotes & growth stats proxy
-│   │   │   └── validate-ticker/route.ts      # Active exchange directory match
-│   │   ├── globals.css                      # Tailwind v4 terminal theme definitions
-│   │   ├── layout.tsx                       # Core HTML layout & Font loads
-│   │   └── page.tsx                         # Main Dashboard Component (React 19)
-│   ├── components/
-│   │   ├── Header.tsx                       # Neon terminal Header layout
-│   │   ├── InputPanel.tsx                   # Filter triggers & prompt library
-│   │   ├── ResultsTable.tsx                 # Sortable, CSV exportable, data-flagged grid
-│   │   ├── ValidationAlerts.tsx             # Hallucinated ticker drops display
-│   │   └── icons.tsx                        # Clean inline SVG symbols
-│   ├── hooks/
-│   │   └── useSortableData.ts               # Column sorting logic
-│   └── lib/
-│       ├── csvExporter.ts                   # CSV output generator
-│       ├── dbHelper.ts                      # Postgres cache layer & Memory Fallback
-│       ├── geminiService.ts                 # Google Gen AI client & prompts
-│       ├── prisma.ts                        # Singleton Prisma Client
-│       ├── tickerValidator.ts               # Active listing matcher
-│       └── types.ts                         # Custom TS Interface bounds
-├── prisma/
-│   └── schema.prisma                        # Prisma Schema defining Core Tables
-├── prisma.config.ts                         # Prisma v7 connection mapper
-├── vitest.config.ts                         # Vitest runner settings
-└── v1_backup/                               # Preserved original v1 code
-```
+| What | Source | Notes |
+|------|--------|-------|
+| AI analysis, discovery, research, sentiment | Google Gemini (`gemini-3.8-flash` by default) | Model is configurable with `GEMINI_MODEL` |
+| Ticker validation (hallucination gate) | Finnhub `/stock/symbol` (free) | Accepts NASDAQ, NYSE, NYSE American, NYSE Arca, Cboe BZX. Rejects OTC, ETFs, warrants, units. Cached 24h. |
+| Live price | Finnhub `/quote` (free) | Cached 5 min |
+| Market cap, P/E, revenue growth, debt/equity, free cash flow (est.) | Finnhub `/stock/metric` (free) | Cached 24h. FCF is derived as market cap ÷ price-to-FCF. |
+| Company name, exchange, industry, website | Finnhub `/stock/profile2` + symbol directory | |
+| Description, sector, industry, CEO | Yahoo Finance via `yahoo-finance2` | Unofficial source. If it fails, fields show N/A. |
+| 1Y / 5Y price growth | Yahoo Finance weekly price history | Falls back to Finnhub 52-week return for 1Y |
+| News | Finnhub `/company-news` (last 14 days) | |
+| Peers | Finnhub `/stock/peers` | Up to 8 peers |
+
+**Finnhub free-tier budget:** 60 calls/minute. All Finnhub calls share one rate limiter (capped at 55/min), so a big discovery run (25+ companies) may pause briefly instead of failing.
 
 ---
 
-## Environment Configuration
+## Setup
 
-Configure your server variables in `.env.local`:
-
-```env
-GOOGLE_GENAI_API_KEY=YOUR_GEMINI_API_KEY
-FMP_API_KEY=YOUR_FMP_API_KEY
-POSTGRES_PRISMA_URL=                           # Pooled connection string (Vercel Postgres / Neon)
-POSTGRES_URL_NON_POOLING=                      # Direct connection string (for migrations)
-```
-
----
-
-## Quick Start
-
-### 1. Install Dependencies
+### 1. Install dependencies
+Requires **Node.js 22+** (needed by `yahoo-finance2` v4).
 ```bash
 npm install
 ```
 
-### 2. Set Up Prisma Client
-```bash
-npx prisma generate
-```
+### 2. Add API keys
+Copy `.env.example` to `.env.local` and fill in:
 
-### 3. Run Development Server
+| Variable | Required | What it's for |
+|----------|----------|---------------|
+| `GOOGLE_GENAI_API_KEY` | Yes | All AI features. Get it at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). |
+| `FINNHUB_API_KEY` | Yes | Ticker validation, prices, fundamentals, news, peers. Get it at [finnhub.io/register](https://finnhub.io/register). |
+| `GEMINI_MODEL` | No | Override the AI model (default `gemini-3.8-flash`) |
+| `DEMO_MODE` | No | `true` = serve clearly-labeled placeholder data when you have no keys |
+
+**What happens when a key is missing (and `DEMO_MODE` is off):**
+- **No Finnhub key:** a red banner says tickers weren't verified. Prices and fundamentals return a clear error, and the details window shows an error instead of fake data.
+- **No Gemini key:** discovery and research return an error, and news sentiment shows "unavailable".
+
+### 3. Run
 ```bash
 npm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000) to view the terminal UI.
+Open http://localhost:3000.
 
 ---
 
-## Running Verification Tests
-
-The test suite runs unit & integration tests on validators, caches, and Next.js routes using Vitest:
+## Tests & Checks
 
 ```bash
 npx vitest run
 ```
+```bash
+npx tsc --noEmit
+```
+```bash
+npm run lint
+```
+
+The tests mock every external API, so they run offline and cost nothing.
+
+---
+
+## Project Structure
+
+```text
+├── Documents/                         # Requirements, specs, improvement plan (source of truth)
+├── src/
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── analyze-trend/         # Gemini trend diagnostics
+│   │   │   ├── discover/              # Gemini discovery + hallucination gate
+│   │   │   ├── enrich/                # Live price, fundamentals, growth, exchange
+│   │   │   ├── company-details/       # Details window: profile + fundamentals + AI value chain
+│   │   │   ├── news/                  # Finnhub headlines + Gemini sentiment
+│   │   │   ├── peers/                 # Finnhub peer comparison
+│   │   │   ├── research/              # Gemini grounded research scans
+│   │   │   ├── validate-ticker/       # Ticker validation endpoint
+│   │   │   ├── watchlist/ portfolios/ history/   # Saved items (in-memory for now)
+│   │   │   └── score/                 # Composite scoring
+│   │   └── page.tsx                   # Main dashboard
+│   ├── components/                    # UI (ResultsTable, DetailsModal, ValidationAlerts, ...)
+│   └── lib/
+│       ├── finnhubService.ts          # Rate-limited Finnhub client + metric normalization
+│       ├── yahooService.ts            # Yahoo price history + company profile
+│       ├── tickerValidator.ts         # Hallucination gate (Finnhub symbol directory)
+│       ├── geminiService.ts           # Gemini prompts & schemas
+│       ├── demoData.ts                # DEMO_MODE placeholder fixtures (labeled)
+│       ├── scoring.ts                 # Composite score
+│       ├── dbHelper.ts / memoryStore.ts  # In-memory cache & storage
+│       └── types.ts
+└── v1_backup/                         # Original v1 code
+```
+
+---
+
+## Known Limitations
+
+See `Documents/Improvement-Plan-2026-09.md` for the full roadmap.
+
+- **Saved data is in memory only.** The watchlist, portfolios and history reset on restart and don't work reliably on Vercel. This is Phase 1 of the plan.
+- **API routes have no authentication.** Don't deploy publicly yet (Phase 1).
+- **The composite score still weights "data availability"** in its health factor. Reweighting is Phase 3.
+- **The market-cap filter is passed to the AI but not enforced** against real market cap yet (Phase 3).
+- **Research citations are written by the model**, not taken from grounding metadata, so verify links (Phase 3).

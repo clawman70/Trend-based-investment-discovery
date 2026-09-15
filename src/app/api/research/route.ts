@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { memoryResearchScans } from '@/lib/memoryStore';
 import { generateTrendResearchReport } from '@/lib/geminiService';
+import { getDemoResearchReport, isDemoMode } from '@/lib/demoData';
 
 export async function POST(request: NextRequest) {
   try {
@@ -34,8 +35,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Generate report
-    const report = await generateTrendResearchReport(sortedDomains, mode, cleanPrompt);
+    // Generate report (placeholder content only when DEMO_MODE=true)
+    const report = isDemoMode()
+      ? getDemoResearchReport(sortedDomains, mode, cleanPrompt)
+      : await generateTrendResearchReport(sortedDomains, mode, cleanPrompt);
 
     // Save to memory cache
     const scanId = crypto.randomUUID();
@@ -57,6 +60,8 @@ export async function POST(request: NextRequest) {
   } catch (error: unknown) {
     console.error('Error in /api/research POST handler:', error);
     const errorMsg = error instanceof Error ? error.message : 'Internal Server Error';
-    return NextResponse.json({ error: errorMsg }, { status: 500 });
+    // 503 = missing configuration, 502 = upstream AI failure
+    const status = errorMsg.includes('not configured') ? 503 : 502;
+    return NextResponse.json({ error: errorMsg }, { status });
   }
 }

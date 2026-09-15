@@ -1,61 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCachedData, setCachedData } from '@/lib/dbHelper';
 import { getValueChainPositionFromAI } from '@/lib/geminiService';
+import { fetchMetrics, fetchProfile, fetchQuote, isFinnhubConfigured, normalizeMetrics } from '@/lib/finnhubService';
+import { fetchCompanyProfile } from '@/lib/yahooService';
+import { getDemoCompanyDetails, isDemoMode } from '@/lib/demoData';
 
-const CACHE_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const CACHE_DURATION_MS = 6 * 60 * 60 * 1000; // 6 hours
 
-interface CompanyDetails {
+/** Every field is real data or null. Nothing is invented. */
+export interface CompanyDetails {
+  isDemo: boolean;
   ticker: string;
   companyName: string;
-  description: string;
-  sector: string;
-  industry: string;
-  ceo: string;
-  website: string;
-  stockPrice: number;
-  marketCap: number;
+  description: string | null;
+  sector: string | null;
+  industry: string | null;
+  ceo: string | null;
+  website: string | null;
+  logo: string | null;
+  stockPrice: number; // 0 = unavailable
+  marketCap: number; // 0 = unavailable
   peRatio: number | null;
-  yoyRevenueGrowth: number | null;
+  yoyRevenueGrowth: number | null; // percent, TTM
   debtToEquity: number | null;
-  freeCashFlow: number | null;
-  valueChainPosition?: string;
-  recentFinancials: {
-    revenue: number;
-    netIncome: number;
-    operatingCashFlow: number;
-    capitalExpenditure: number;
-    totalDebt: number;
-    totalEquity: number;
-    date: string;
-  } | null;
-}
-
-interface FMPProfile {
-  companyName?: string;
-  description?: string;
-  sector?: string;
-  industry?: string;
-  ceo?: string;
-  website?: string;
-  price?: number;
-  mcap?: number;
-  pe?: number | null;
-}
-
-interface FMPIncome {
-  revenue?: number;
-  netIncome?: number;
-  date?: string;
-}
-
-interface FMPBalance {
-  totalDebt?: number;
-  totalStockholdersEquity?: number;
-}
-
-interface FMPCashFlow {
-  operatingCashFlow?: number;
-  capitalExpenditure?: number;
+  freeCashFlow: number | null; // derived: market cap / (price-to-FCF)
+  valueChainPosition: string | null; // AI-generated, only when a trend is supplied
 }
 
 export async function GET(request: NextRequest) {
@@ -70,196 +39,78 @@ export async function GET(request: NextRequest) {
 
     const upperTicker = ticker.trim().toUpperCase();
     const cleanTrend = trend ? trend.trim() : '';
-    const cacheKey = cleanTrend 
-      ? `details:${upperTicker}:${cleanTrend.replace(/\s+/g, '_')}`
+
+    if (isDemoMode()) {
+      return NextResponse.json(getDemoCompanyDetails(upperTicker, cleanTrend));
+    }
+
+    if (!isFinnhubConfigured()) {
+      return NextResponse.json(
+        { error: 'FINNHUB_API_KEY is not configured in .env.local — company details are unavailable.' },
+        { status: 503 }
+      );
+    }
+
+    const cacheKey = cleanTrend
+      ? `details:${upperTicker}:${cleanTrend.toLowerCase().replace(/\s+/g, '_')}`
       : `details:${upperTicker}`;
 
-    // 1. Check cache first
     const cached = (await getCachedData(cacheKey)) as CompanyDetails | null;
     if (cached) {
       return NextResponse.json(cached);
     }
 
-    const apiKey = process.env.FMP_API_KEY;
-
-    // 2. Fallback to mock details if API Key is placeholder/absent
-    if (!apiKey || apiKey === 'PLACEHOLDER_API_KEY') {
-      const dummyDetails: CompanyDetails = {
-        ticker: upperTicker,
-        companyName: `${upperTicker} Corp`,
-        description: `${upperTicker} is a high-growth technology enterprise specializing in scalable software applications, edge computing interfaces, and advanced computational platforms for next-generation industries.`,
-        sector: 'Technology',
-        industry: 'Software—Application',
-        ceo: 'Sarah Jenkins',
-        website: 'https://example.com',
-        stockPrice: 154.20,
-        marketCap: 45000000000,
-        peRatio: 32.4,
-        yoyRevenueGrowth: 24.5,
-        debtToEquity: 0.45,
-        freeCashFlow: 820000000,
-        valueChainPosition: cleanTrend 
-          ? `Midstream supplier of specialized applications for the ${cleanTrend} trend.`
-          : 'Midstream component designer.',
-        recentFinancials: {
-          revenue: 4200000000,
-          netIncome: 850000000,
-          operatingCashFlow: 1100000000,
-          capitalExpenditure: 280000000,
-          totalDebt: 1200000000,
-          totalEquity: 2660000000,
-          date: new Date().toISOString().split('T')[0],
-        },
-      };
-      // Cache the mock result
-      await setCachedData(cacheKey, 'financial', dummyDetails, CACHE_DURATION_MS);
-      return NextResponse.json(dummyDetails);
-    }
-
-    // 3. Fetch from FMP
+    let profile, metrics, quote, yahooProfile;
     try {
-      const profileUrl = `https://financialmodelingprep.com/api/v3/profile/${upperTicker}?apikey=${apiKey}`;
-      const profileRes = await fetch(profileUrl);
-      if (!profileRes.ok) {
-        throw new Error(`Profile fetch failed: ${profileRes.status}`);
-      }
-      const profileData = (await profileRes.json()) as FMPProfile[];
-      if (!profileData || profileData.length === 0) {
-        throw new Error(`Ticker ${upperTicker} profile not found`);
-      }
-
-      const prof = profileData[0];
-
-      // Income Statement
-      let yoyRevenueGrowth: number | null = null;
-      let recentIncome: FMPIncome | null = null;
-      const incomeUrl = `https://financialmodelingprep.com/api/v3/income-statement/${upperTicker}?limit=2&apikey=${apiKey}`;
-      const incomeRes = await fetch(incomeUrl);
-      if (incomeRes.ok) {
-        const incomeData = (await incomeRes.json()) as FMPIncome[];
-        if (incomeData && incomeData.length > 0) {
-          recentIncome = incomeData[0];
-          if (incomeData.length > 1) {
-            const revCurr = incomeData[0].revenue || 0;
-            const revPrev = incomeData[1].revenue || 0;
-            if (revPrev > 0) {
-              yoyRevenueGrowth = ((revCurr - revPrev) / revPrev) * 100;
-            }
-          }
-        }
-      }
-
-      // Balance Sheet
-      let debtToEquity: number | null = null;
-      let recentBalance: FMPBalance | null = null;
-      const balanceUrl = `https://financialmodelingprep.com/api/v3/balance-sheet-statement/${upperTicker}?limit=1&apikey=${apiKey}`;
-      const balanceRes = await fetch(balanceUrl);
-      if (balanceRes.ok) {
-        const balanceData = (await balanceRes.json()) as FMPBalance[];
-        if (balanceData && balanceData.length > 0) {
-          recentBalance = balanceData[0];
-          const debt = balanceData[0].totalDebt || 0;
-          const equity = balanceData[0].totalStockholdersEquity || 0;
-          if (equity > 0) {
-            debtToEquity = debt / equity;
-          }
-        }
-      }
-
-      // Cash Flow Statement
-      let freeCashFlow: number | null = null;
-      let recentCashFlow: FMPCashFlow | null = null;
-      const cashFlowUrl = `https://financialmodelingprep.com/api/v3/cash-flow-statement/${upperTicker}?limit=1&apikey=${apiKey}`;
-      const cashFlowRes = await fetch(cashFlowUrl);
-      if (cashFlowRes.ok) {
-        const cashFlowData = (await cashFlowRes.json()) as FMPCashFlow[];
-        if (cashFlowData && cashFlowData.length > 0) {
-          recentCashFlow = cashFlowData[0];
-          const ocf = cashFlowData[0].operatingCashFlow || 0;
-          const capex = cashFlowData[0].capitalExpenditure || 0;
-          freeCashFlow = ocf - capex;
-        }
-      }
-
-      // Fetch Value Chain Position via Gemini if trend context is available
-      let valueChainPosition = undefined;
-      if (cleanTrend) {
-        valueChainPosition = await getValueChainPositionFromAI(
-          upperTicker,
-          prof.companyName || upperTicker,
-          prof.sector || 'N/A',
-          prof.industry || 'N/A',
-          cleanTrend
-        );
-      }
-
-      // Assemble object
-      const details: CompanyDetails = {
-        ticker: upperTicker,
-        companyName: prof.companyName || upperTicker,
-        description: prof.description || 'No description available.',
-        sector: prof.sector || 'N/A',
-        industry: prof.industry || 'N/A',
-        ceo: prof.ceo || 'N/A',
-        website: prof.website || 'N/A',
-        stockPrice: prof.price || 0,
-        marketCap: prof.mcap || 0,
-        peRatio: prof.pe !== undefined && prof.pe !== null ? Number(prof.pe) : null,
-        yoyRevenueGrowth,
-        debtToEquity,
-        freeCashFlow,
-        valueChainPosition,
-        recentFinancials: recentIncome
-          ? {
-              revenue: recentIncome.revenue || 0,
-              netIncome: recentIncome.netIncome || 0,
-              operatingCashFlow: recentCashFlow?.operatingCashFlow || 0,
-              capitalExpenditure: recentCashFlow?.capitalExpenditure || 0,
-              totalDebt: recentBalance?.totalDebt || 0,
-              totalEquity: recentBalance?.totalStockholdersEquity || 0,
-              date: recentIncome.date || 'N/A',
-            }
-          : null,
-      };
-
-      // Cache and return
-      await setCachedData(cacheKey, 'financial', details, CACHE_DURATION_MS);
-      return NextResponse.json(details);
+      [profile, metrics, quote, yahooProfile] = await Promise.all([
+        fetchProfile(upperTicker),
+        fetchMetrics(upperTicker).catch(() => null),
+        fetchQuote(upperTicker).catch(() => null),
+        fetchCompanyProfile(upperTicker),
+      ]);
     } catch (err) {
-      console.error(`FMP live fetch failed for details ${upperTicker}:`, err);
-      // Fallback to dummy data
-      const dummyDetails: CompanyDetails = {
-        ticker: upperTicker,
-        companyName: `${upperTicker} Corp`,
-        description: `${upperTicker} is a high-growth technology enterprise.`,
-        sector: 'Technology',
-        industry: 'Software—Application',
-        ceo: 'Sarah Jenkins',
-        website: 'https://example.com',
-        stockPrice: 154.20,
-        marketCap: 45000000000,
-        peRatio: 32.4,
-        yoyRevenueGrowth: 24.5,
-        debtToEquity: 0.45,
-        freeCashFlow: 820000000,
-        valueChainPosition: cleanTrend 
-          ? `Midstream supplier of specialized applications for the ${cleanTrend} trend.`
-          : 'Midstream component designer.',
-        recentFinancials: {
-          revenue: 4200000000,
-          netIncome: 850000000,
-          operatingCashFlow: 1100000000,
-          capitalExpenditure: 280000000,
-          totalDebt: 1200000000,
-          totalEquity: 2660000000,
-          date: new Date().toISOString().split('T')[0],
-        },
-      };
-      await setCachedData(cacheKey, 'financial', dummyDetails, CACHE_DURATION_MS);
-      return NextResponse.json(dummyDetails);
+      console.error(`Finnhub profile fetch failed for ${upperTicker}:`, err);
+      return NextResponse.json({ error: `Company data is unavailable for ${upperTicker} right now.` }, { status: 502 });
     }
+
+    if (!profile && !quote) {
+      return NextResponse.json({ error: `No company data found for ${upperTicker}.` }, { status: 404 });
+    }
+
+    const fundamentals = normalizeMetrics(metrics);
+    const companyName = profile?.name ?? upperTicker;
+    const sector = yahooProfile?.sector ?? profile?.finnhubIndustry ?? null;
+    const industry = yahooProfile?.industry ?? null;
+
+    const valueChainPosition = cleanTrend
+      ? await getValueChainPositionFromAI(upperTicker, companyName, sector ?? 'N/A', industry ?? 'N/A', cleanTrend)
+      : null;
+
+    const profileMarketCap = profile?.marketCapitalization ? profile.marketCapitalization * 1_000_000 : 0;
+
+    const details: CompanyDetails = {
+      isDemo: false,
+      ticker: upperTicker,
+      companyName,
+      description: yahooProfile?.description ?? null,
+      sector,
+      industry,
+      ceo: yahooProfile?.ceo ?? null,
+      website: yahooProfile?.website ?? profile?.weburl ?? null,
+      logo: profile?.logo || null,
+      stockPrice: quote?.c ?? 0,
+      marketCap: fundamentals.marketCap ?? profileMarketCap,
+      peRatio: fundamentals.peRatio,
+      yoyRevenueGrowth: fundamentals.revenueGrowthYoY,
+      debtToEquity: fundamentals.debtToEquity,
+      freeCashFlow: fundamentals.freeCashFlowDerived,
+      valueChainPosition,
+    };
+
+    await setCachedData(cacheKey, 'financial', details, CACHE_DURATION_MS);
+    return NextResponse.json(details);
   } catch (error: unknown) {
-    console.error("Error in company-details GET:", error);
+    console.error('Error in company-details GET:', error);
     const errorMessage = error instanceof Error ? error.message : 'Internal Server Error';
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }

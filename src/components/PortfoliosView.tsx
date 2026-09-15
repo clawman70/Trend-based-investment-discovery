@@ -5,8 +5,8 @@ interface PortfolioItem {
   ticker: string;
   companyName: string;
   priceAtAdd: number;
-  currentPrice: number;
-  gainLossPercent: number;
+  currentPrice: number | null; // null = live price unavailable
+  gainLossPercent: number | null;
   notes: string | null;
   tags: string[];
 }
@@ -18,6 +18,7 @@ interface Portfolio {
   createdAt: string;
   totalCostBasis: number;
   totalCurrentValue: number;
+  unpricedCount?: number; // items excluded from totals because no live price was available
   gainLossPercent: number;
   items: PortfolioItem[];
 }
@@ -270,6 +271,11 @@ export const PortfoliosView: React.FC<PortfoliosViewProps> = ({ isActive, onInsp
                           <span className="text-xs font-mono text-zinc-400">
                             ${port.totalCostBasis.toFixed(2)} → ${port.totalCurrentValue.toFixed(2)}
                           </span>
+                          {port.unpricedCount ? (
+                            <span className="text-[10px] font-mono text-brand-yellow" title="Excluded from totals: no live price">
+                              ({port.unpricedCount} unpriced)
+                            </span>
+                          ) : null}
                           <span
                             className={`px-2 py-0.5 rounded text-[11px] font-bold font-mono ${
                               port.gainLossPercent >= 0
@@ -361,16 +367,24 @@ export const PortfoliosView: React.FC<PortfoliosViewProps> = ({ isActive, onInsp
                                   </td>
                                   <td className="px-3 py-2 text-zinc-300">{item.companyName}</td>
                                   <td className="px-3 py-2 text-zinc-400">${item.priceAtAdd.toFixed(2)}</td>
-                                  <td className="px-3 py-2 text-zinc-300">${item.currentPrice.toFixed(2)}</td>
+                                  <td className="px-3 py-2 text-zinc-300">
+                                    {item.currentPrice !== null ? `$${item.currentPrice.toFixed(2)}` : (
+                                      <span className="text-zinc-600 italic">N/A</span>
+                                    )}
+                                  </td>
                                   <td className="px-3 py-2">
-                                    <span
-                                      className={
-                                        item.gainLossPercent >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                                      }
-                                    >
-                                      {item.gainLossPercent >= 0 ? '+' : ''}
-                                      {item.gainLossPercent.toFixed(1)}%
-                                    </span>
+                                    {item.gainLossPercent !== null ? (
+                                      <span
+                                        className={
+                                          item.gainLossPercent >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                                        }
+                                      >
+                                        {item.gainLossPercent >= 0 ? '+' : ''}
+                                        {item.gainLossPercent.toFixed(1)}%
+                                      </span>
+                                    ) : (
+                                      <span className="text-zinc-600 italic">N/A</span>
+                                    )}
                                   </td>
                                   <td className="px-3 py-2 text-center">
                                     {/* Item ID is passed to remove_item as watchlistId mapping reference */}

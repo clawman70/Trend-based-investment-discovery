@@ -39,6 +39,7 @@ export default function Home() {
 
   const [results, setResults] = useState<ScoredCompanyData[]>([]);
   const [invalidTickers, setInvalidTickers] = useState<string[]>([]);
+  const [validationBypassed, setValidationBypassed] = useState<boolean>(false);
   
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isDiscovering, setIsDiscovering] = useState<boolean>(false);
@@ -121,6 +122,7 @@ export default function Home() {
       setTrendAnalyses(data.search.trendAnalysis || {});
       setResults(data.companies || []);
       setInvalidTickers([]);
+      setValidationBypassed(false);
       setShowDiscoverButton(true);
       setLoadingStep('completed');
       setActiveTab('discover');
@@ -205,12 +207,14 @@ export default function Home() {
       const discoverData = (await discoverResponse.json()) as {
         companies: ScoredCompanyData[];
         invalidTickers: string[];
+        validationMetrics?: { validationBypassed?: boolean };
       };
       
       const discovered = discoverData.companies || [];
       const droppedTickers = discoverData.invalidTickers || [];
       
       setInvalidTickers(droppedTickers);
+      setValidationBypassed(!!discoverData.validationMetrics?.validationBypassed);
 
       if (discovered.length === 0) {
         setError('No valid companies matched your filters. Try broadening your criteria or revising your theses.');
@@ -246,8 +250,11 @@ export default function Home() {
           ...c,
           stockPrice: enrichInfo?.stockPrice ?? 0,
           marketCap: enrichInfo?.marketCap ?? 0,
-          exchange: enrichInfo?.exchange ?? 'NASDAQ',
+          exchange: enrichInfo?.exchange ?? null,
           peRatio: enrichInfo?.peRatio ?? null,
+          debtToEquity: enrichInfo?.debtToEquity ?? null,
+          growth1Y: enrichInfo?.growth1Y ?? null,
+          growth5Y: enrichInfo?.growth5Y ?? null,
           dataQuality: enrichInfo?.dataQuality ?? {
             priceSource: 'unavailable',
           },
@@ -346,8 +353,8 @@ export default function Home() {
             <span>TERMINAL STATUS: ONLINE</span>
           </div>
           <div className="flex items-center space-x-4">
-            <span>MODEL: GEMINI-3.5-FLASH</span>
-            <span>API TIER: FMP FREE</span>
+            <span>AI: GEMINI</span>
+            <span>DATA: FINNHUB + YAHOO FINANCE</span>
           </div>
         </div>
 
@@ -411,13 +418,13 @@ export default function Home() {
                     ? 'AI Diagnostics compiling trend maturity stage and Catalysts...'
                     : loadingStep === 'discovering'
                     ? 'AI Model scanning market for candidates matching theses intersection...'
-                    : 'Querying FMP exchange list & price histories...'}
+                    : 'Fetching live prices, fundamentals & price history...'}
                 </p>
                 <p className="text-xs text-brand-light mt-1.5 font-mono">
                   {loadingStep === 'analyzing'
                     ? 'Assessing estimated TAM size, triggers, and macro risks'
                     : loadingStep === 'discovering'
-                    ? 'Gemini 3.5 Flash is examining product convergence and relevance alignment'
+                    ? 'Gemini is examining product convergence and relevance alignment'
                     : 'Calculating 1-year and 5-year growth fundamentals and parsing P/E valuations'}
                 </p>
               </div>
@@ -438,8 +445,8 @@ export default function Home() {
             )}
 
             {/* Invalid Ticker Alerts */}
-            {!isLoading && invalidTickers.length > 0 && (
-              <ValidationAlerts invalidTickers={invalidTickers} />
+            {!isLoading && (invalidTickers.length > 0 || validationBypassed) && (
+              <ValidationAlerts invalidTickers={invalidTickers} bypassed={validationBypassed} />
             )}
 
             {/* Matrix Result & Weight Slider Dashboard */}

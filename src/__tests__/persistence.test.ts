@@ -4,6 +4,8 @@ import { GET as historyGET, POST as historyPOST, DELETE as historyDELETE } from 
 import { GET as watchlistGET, POST as watchlistPOST, PUT as watchlistPUT, DELETE as watchlistDELETE } from '../app/api/watchlist/route';
 import { GET as portfoliosGET, POST as portfoliosPOST, DELETE as portfoliosDELETE } from '../app/api/portfolios/route';
 import { ScoredCompanyData } from '../lib/types';
+import * as finnhubService from '../lib/finnhubService';
+import type { FinnhubQuote } from '../lib/finnhubService';
 import {
   memorySearches,
   memorySearchResults,
@@ -17,6 +19,14 @@ vi.mock('../lib/dbHelper', () => ({
   isDbAvailable: vi.fn().mockResolvedValue(false),
 }));
 
+vi.mock('../lib/finnhubService', () => ({
+  isFinnhubConfigured: vi.fn(() => true),
+  fetchQuotes: vi.fn(),
+}));
+
+const quotes = (prices: Record<string, number>) =>
+  new Map(Object.entries(prices).map(([symbol, c]) => [symbol, { c } as FinnhubQuote]));
+
 describe('Phase 3 — Persistence Layer Tests', () => {
   beforeEach(() => {
     // Clear global memory stores before each test run
@@ -25,8 +35,6 @@ describe('Phase 3 — Persistence Layer Tests', () => {
     memoryWatchlistItems.length = 0;
     memoryTrendPortfolios.length = 0;
     memoryPortfolioItems.length = 0;
-
-    process.env.FMP_API_KEY = 'TEST_KEY';
   });
 
   afterEach(() => {
@@ -38,6 +46,7 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       const mockResult: ScoredCompanyData = {
         ticker: 'MSFT',
         companyName: 'Microsoft Corp.',
+        rationale: 'Office AI integration',
         relevanceScore: 9,
         trendsMatched: ['AI Tools'],
         convergenceScore: 1.0,
@@ -103,15 +112,8 @@ describe('Phase 3 — Persistence Layer Tests', () => {
 
   describe('Watchlist API (POST & GET & PUT & DELETE /api/watchlist)', () => {
     it('should CRUD watchlisted tickers and evaluate gains relative to cost', async () => {
-      // Mock FMP batch quotes endpoint
-      const mockQuotes = [{ symbol: 'AAPL', price: 180.0 }];
-      vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-        const urlStr = String(url);
-        if (urlStr.includes('/quote/AAPL')) {
-          return { ok: true, json: async () => mockQuotes } as Response;
-        }
-        return { ok: false } as Response;
-      });
+      // Mock Finnhub live quotes
+      vi.mocked(finnhubService.fetchQuotes).mockResolvedValue(quotes({ AAPL: 180.0 }));
 
       // 1. Add asset to watchlist (cost basis $100.0)
       const postRequest = new NextRequest('http://localhost:3000/api/watchlist', {
@@ -132,8 +134,7 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       expect(memoryWatchlistItems.length).toBe(1);
 
       // 2. Fetch watchlist (evaluates live quote 180.0 against cost $100.0)
-      const getRequest = new NextRequest('http://localhost:3000/api/watchlist');
-      const getResponse = await watchlistGET(getRequest);
+      const getResponse = await watchlistGET();
       expect(getResponse.status).toBe(200);
       const getJson = await getResponse.json();
       expect(getJson.length).toBe(1);
@@ -168,18 +169,8 @@ describe('Phase 3 — Persistence Layer Tests', () => {
 
   describe('Trend Portfolios API (POST & GET & DELETE /api/portfolios)', () => {
     it('should create portfolios, add constituent links, and calculate aggregates', async () => {
-      // Mock FMP batch quotes endpoint for portfolios
-      const mockQuotes = [
-        { symbol: 'AAPL', price: 150.0 }, // Cost $100 -> Value $150
-        { symbol: 'MSFT', price: 300.0 }, // Cost $300 -> Value $300
-      ];
-      vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-        const urlStr = String(url);
-        if (urlStr.includes('/quote/')) {
-          return { ok: true, json: async () => mockQuotes } as Response;
-        }
-        return { ok: false } as Response;
-      });
+      // Mock Finnhub live quotes: AAPL cost $100 -> $150, MSFT cost $300 -> $300
+      vi.mocked(finnhubService.fetchQuotes).mockResolvedValue(quotes({ AAPL: 150.0, MSFT: 300.0 }));
 
       // 1. Pre-seed two items in watchlist
       memoryWatchlistItems.push(
@@ -256,6 +247,31 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       const removeResponse = await portfoliosDELETE(removeRequest);
       expect(removeResponse.status).toBe(200);
       expect(memoryPortfolioItems.length).toBe(1); // Only MSFT link remains
+    });
+  });
+
+  describe('Missing live prices', () => {
+    it('shows N/A (null) instead of silently reusing the cost basis', async () => {
+      vi.mocked(finnhubService.fetchQuotes).mockResolvedValue(quotes({ AAPL: 150.0 })); // no MSFT price
+
+      memoryWatchlistItems.push(
+        { id: 'wl-1', ticker: 'AAPL', companyName: 'Apple Inc.', addedAt: new Date(), priceAtAdd: 100, sourceSearchId: null, notes: null, tags: [] },
+        { id: 'wl-2', ticker: 'MSFT', companyName: 'Microsoft Corp.', addedAt: new Date(), priceAtAdd: 300, sourceSearchId: null, notes: null, tags: [] }
+      );
+      memoryTrendPortfolios.push({ id: 'p-1', name: 'Mixed', description: null, createdAt: new Date() });
+      memoryPortfolioItems.push({ id: 'pi-1', portfolioId: 'p-1', watchlistId: 'wl-1' }, { id: 'pi-2', portfolioId: 'p-1', watchlistId: 'wl-2' });
+
+      const watchlist = await (await watchlistGET()).json();
+      const msft = watchlist.find((i: { ticker: string }) => i.ticker === 'MSFT');
+      expect(msft.currentPrice).toBeNull();
+      expect(msft.gainLossPercent).toBeNull();
+
+      const [portfolio] = await (await portfoliosGET()).json();
+      // Totals only cover the priced item (AAPL): $100 -> $150
+      expect(portfolio.totalCostBasis).toBe(100);
+      expect(portfolio.totalCurrentValue).toBe(150);
+      expect(portfolio.unpricedCount).toBe(1);
+      expect(portfolio.gainLossPercent).toBeCloseTo(50);
     });
   });
 });
