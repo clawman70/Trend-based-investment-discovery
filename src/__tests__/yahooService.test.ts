@@ -12,7 +12,7 @@ vi.mock('yahoo-finance2', () => ({
   },
 }));
 
-import { calculateGrowth, fetchCompanyProfile, fetchPriceGrowth } from '../lib/yahooService';
+import { calculateGrowth, calculateSixMonthRally, fetchCompanyProfile, fetchPriceGrowth, fetchSixMonthRally } from '../lib/yahooService';
 
 const NOW = new Date('2026-09-15T00:00:00Z');
 
@@ -47,6 +47,41 @@ describe('Yahoo service', () => {
       const result = calculateGrowth('YOUNG', 100, closes, NOW);
       expect(result.growth1Y).toBeCloseTo(25);
       expect(result.growth5Y).toBeNull();
+    });
+  });
+
+  describe('calculateSixMonthRally', () => {
+    it('flags a real rally (>30% in 6 months) from actual price history', () => {
+      const closes = [{ date: new Date('2026-03-16'), close: 100 }]; // ~6 months ago
+      const result = calculateSixMonthRally('HOT', 135, closes, NOW);
+      expect(result.rallied).toBe(true);
+      expect(result.changePercent).toBeCloseTo(35);
+    });
+
+    it('does not flag a rally when the move is under 30%', () => {
+      const closes = [{ date: new Date('2026-03-16'), close: 100 }];
+      const result = calculateSixMonthRally('STEADY', 120, closes, NOW);
+      expect(result.rallied).toBe(false);
+    });
+
+    it('returns null (not false) when there is no price history to check against — never guess', () => {
+      const result = calculateSixMonthRally('NEWCO', 100, [], NOW);
+      expect(result.rallied).toBeNull();
+      expect(result.changePercent).toBeNull();
+    });
+
+    it('returns null when the current price is unavailable', () => {
+      const closes = [{ date: new Date('2026-03-16'), close: 100 }];
+      const result = calculateSixMonthRally('NOPRICE', 0, closes, NOW);
+      expect(result.rallied).toBeNull();
+    });
+  });
+
+  describe('fetchSixMonthRally', () => {
+    it('returns null instead of throwing when Yahoo fails', async () => {
+      chartMock.mockRejectedValue(new Error('No data found'));
+      const result = await fetchSixMonthRally('ZZZQ', 10);
+      expect(result).toEqual({ ticker: 'ZZZQ', rallied: null, changePercent: null });
     });
   });
 

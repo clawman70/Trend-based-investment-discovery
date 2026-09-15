@@ -81,6 +81,52 @@ export function calculateGrowth(
 /** Yahoo uses dashes for share classes (BRK-B); Finnhub uses dots (BRK.B). */
 const toYahooSymbol = (ticker: string) => ticker.toUpperCase().replace(/\./g, '-');
 
+export interface SixMonthRally {
+  ticker: string;
+  rallied: boolean | null; // null = couldn't verify (insufficient price history)
+  changePercent: number | null;
+}
+
+/** Pure calculation, exported for unit tests. */
+export function calculateSixMonthRally(
+  ticker: string,
+  currentPrice: number,
+  closes: WeeklyClose[],
+  now: Date = new Date()
+): SixMonthRally {
+  if (!(currentPrice > 0) || closes.length === 0) {
+    return { ticker, rallied: null, changePercent: null };
+  }
+
+  const sixMonthsAgo = new Date(now);
+  sixMonthsAgo.setMonth(now.getMonth() - 6);
+  const priceThen = findClosestClose(sixMonthsAgo, closes);
+  if (priceThen === null || priceThen <= 0) {
+    return { ticker, rallied: null, changePercent: null };
+  }
+
+  const changePercent = ((currentPrice - priceThen) / priceThen) * 100;
+  return { ticker, rallied: changePercent > 30, changePercent };
+}
+
+/** Whether a stock has rallied >30% over the last 6 months, computed from real price history — never an AI guess. */
+export async function fetchSixMonthRally(ticker: string, currentPrice: number): Promise<SixMonthRally> {
+  const symbol = ticker.toUpperCase();
+  try {
+    const period1 = new Date(Date.now() - (6 * 31 + 21) * MS_PER_DAY); // ~6 months plus a buffer for weekly-bar tolerance
+    const result = await yahooFinance.chart(toYahooSymbol(symbol), { period1, interval: '1wk' });
+
+    const closes: WeeklyClose[] = result.quotes
+      .filter((q) => typeof q.close === 'number' && q.close > 0)
+      .map((q) => ({ date: q.date, close: q.close as number }));
+
+    return calculateSixMonthRally(symbol, currentPrice, closes);
+  } catch (error) {
+    console.warn(`[History] Yahoo chart failed for 6-month rally on ${symbol}:`, error instanceof Error ? error.message : error);
+    return { ticker: symbol, rallied: null, changePercent: null };
+  }
+}
+
 export interface CompanyProfile {
   description: string | null;
   sector: string | null;

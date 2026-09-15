@@ -15,6 +15,7 @@ import { ResearchPanel } from '@/components/ResearchPanel';
 import { ResearchReport } from '@/components/ResearchReport';
 import { ScoredCompanyData, Filters, TrendAnalysis, TrendResearchReport } from '@/lib/types';
 import { calculateCompanyScores } from '@/lib/scoring';
+import { passesMarketCapFilter } from '@/lib/marketCapFilter';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<string>('research');
@@ -148,23 +149,27 @@ export default function Home() {
     setInvalidTickers([]);
 
     try {
-      const analyses: Record<string, TrendAnalysis> = {};
-      for (const trendText of activeTrends) {
-        const response = await fetch('/api/analyze-trend', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ trend: trendText.trim() }),
-        });
+      // Run all theses in parallel instead of one at a time — was the slowest part of
+      // a multi-thesis run for no reason, since each call is independent.
+      const results = await Promise.all(
+        activeTrends.map(async (trendText) => {
+          const response = await fetch('/api/analyze-trend', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ trend: trendText.trim() }),
+          });
 
-        if (!response.ok) {
-          const errJson = (await response.json()) as { error?: string };
-          throw new Error(errJson.error || `Failed to analyze thesis: "${trendText}"`);
-        }
+          if (!response.ok) {
+            const errJson = (await response.json()) as { error?: string };
+            throw new Error(errJson.error || `Failed to analyze thesis: "${trendText}"`);
+          }
 
-        const data = (await response.json()) as { analysis: TrendAnalysis };
-        analyses[trendText] = data.analysis;
-      }
+          const data = (await response.json()) as { analysis: TrendAnalysis };
+          return [trendText, data.analysis] as const;
+        })
+      );
 
+      const analyses: Record<string, TrendAnalysis> = Object.fromEntries(results);
       setTrendAnalyses(analyses);
       setShowDiscoverButton(true);
       setLoadingStep('idle');
@@ -261,8 +266,20 @@ export default function Home() {
         };
       });
 
+      // 3b. Enforce the market-cap filter against real (enriched) data — the AI only
+      // sees it as a text hint, so a company whose actual market cap doesn't fit the
+      // requested tier gets dropped here rather than trusted from the model's guess.
+      const capFilteredResults = mergedResults.filter((c) => passesMarketCapFilter(c.marketCap, filters.marketCap));
+
+      if (capFilteredResults.length === 0) {
+        setError('No companies matched your filters after checking real market cap data. Try broadening your market-cap selection.');
+        setLoadingStep('idle');
+        setIsDiscovering(false);
+        return;
+      }
+
       // 4. Calculate weighted composite scores client-side
-      const scoredResults = calculateCompanyScores(mergedResults, weights);
+      const scoredResults = calculateCompanyScores(capFilteredResults, weights);
       
       // Sort primarily by composite score
       scoredResults.sort((a, b) => b.compositeScore - a.compositeScore);

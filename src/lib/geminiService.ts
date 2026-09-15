@@ -122,9 +122,8 @@ const structuredReportSchema = {
           ticker: { type: Type.STRING },
           marketCapTier: { type: Type.STRING, description: "Market capitalization category. Must be one of: 'micro', 'small', 'mid', 'large'." },
           context: { type: Type.STRING, description: 'Why the company is relevant to the convergence trend.' },
-          recentRally: { type: Type.BOOLEAN, description: 'Whether the stock has rallied >30% in the last 6 months.' },
         },
-        required: ['name', 'ticker', 'marketCapTier', 'context', 'recentRally'],
+        required: ['name', 'ticker', 'marketCapTier', 'context'],
       },
     },
     adjacentSignals: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Weak or early-stage signals that are not complete theses yet.' },
@@ -135,7 +134,9 @@ const structuredReportSchema = {
 interface ParsedResearchOutput {
   executiveSummary: string;
   candidateTheses: CandidateThesis[];
-  companiesMentioned: MentionedCompany[];
+  // recentRally is deliberately not asked of the model — it's computed from real price
+  // history in the research route instead. See MentionedCompany in types.ts.
+  companiesMentioned: Omit<MentionedCompany, 'recentRally'>[];
   adjacentSignals: string[];
 }
 
@@ -173,7 +174,7 @@ Constraints:
 - Only surface trends that have emerged or significantly accelerated in the past 30 days.
 - Exclude any trend that has been widely covered for more than 180 days — if it is already consensus, it's priced in.
 - Prioritize cross-domain convergence over single-domain trends.
-- For any companies mentioned, flag their market cap tier (micro < $300M, small $300M-$2B, mid $2B-$10B, large > $10B) and check if they have rallied significantly (>30%) in the past 6 months.
+- For any companies mentioned, flag their market cap tier (micro < $300M, small $300M-$2B, mid $2B-$10B, large > $10B).
 - Source from: research papers, patent filings, government funding announcements, credible technology news, technical YouTube content, patent databases.`;
 
 const MIN_GROUNDING_CHUNKS = 1;
@@ -274,7 +275,7 @@ You must use Google Search for this task — your training data is not sufficien
 Search Context & Scanned Domains: [${domainsStr}]
 Task: ${researchTask}
 
-After searching, write a detailed narrative covering: an executive summary; 2-4 candidate convergence theses (each with a thesis statement, convergence type, domains involved, recency signal, maturity stage, confidence level, and rationale); notable companies mentioned (name, ticker, market cap tier, why relevant, whether it's rallied >30% in 6 months); and any weaker adjacent signals. Cite the specific real source for every factual claim as you go.`;
+After searching, write a detailed narrative covering: an executive summary; 2-4 candidate convergence theses (each with a thesis statement, convergence type, domains involved, recency signal, maturity stage, confidence level, and rationale); notable companies mentioned (name, ticker, market cap tier, why relevant); and any weaker adjacent signals. Cite the specific real source for every factual claim as you go.`;
 
   const searchResponse = await runGroundedSearch(searchPrompt);
   const narrative = searchResponse.text?.trim();
@@ -291,7 +292,9 @@ After searching, write a detailed narrative covering: an executive summary; 2-4 
     scanDate: scanDateIso,
     domainsScanned: domains,
     candidateTheses: reconcileSources(parsed.candidateTheses, realGroundingResults),
-    companiesMentioned: parsed.companiesMentioned,
+    // recentRally: null here — the research route fills in the real, price-history-based
+    // value for each company before this report reaches the client.
+    companiesMentioned: parsed.companiesMentioned.map((c) => ({ ...c, recentRally: null })),
     adjacentSignals: parsed.adjacentSignals,
   };
 };

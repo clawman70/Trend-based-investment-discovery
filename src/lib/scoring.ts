@@ -28,30 +28,21 @@ function calculateValuationScore(peRatio: number | null, allPERatios: (number | 
 }
 
 /**
- * Calculate normalized financial health score (0-1)
- * Combines debt-to-equity and data quality
+ * Calculate normalized financial health score (0-1) from debt-to-equity.
+ * Lower debt-to-equity is healthier. Neutral (0.5) when the ratio is missing —
+ * same convention as calculateValuationScore for missing P/E. Data availability
+ * used to be 70% of this score; now that debt-to-equity is real data (Phase 0),
+ * "did the data load" isn't a proxy for health anymore.
  */
-function calculateHealthScore(
-  debtToEquity: number | null,
-  priceSource: 'live' | 'unavailable',
-  allDebtToEquity: (number | null)[]
-): number {
-  // Data quality is primary
-  const dataQualityScore = priceSource === 'live' ? 0.8 : 0.2;
+function calculateHealthScore(debtToEquity: number | null, allDebtToEquity: (number | null)[]): number {
+  if (debtToEquity === null || debtToEquity === undefined || debtToEquity < 0) return 0.5;
 
-  // Debt-to-equity is secondary (lower is better, but some debt is normal)
-  let debtScore = 0.5;
-  if (debtToEquity !== null && debtToEquity >= 0) {
-    const validDTE = allDebtToEquity.filter((dte) => dte !== null && dte >= 0) as number[];
-    if (validDTE.length > 0) {
-      const minDTE = Math.min(...validDTE);
-      const maxDTE = Math.max(...validDTE);
-      debtScore = 1 - normalizeMinMax(debtToEquity, minDTE, maxDTE); // Invert: lower is better
-    }
-  }
+  const validDTE = allDebtToEquity.filter((dte) => dte !== null && dte >= 0) as number[];
+  if (validDTE.length === 0) return 0.5;
 
-  // Weighted average: 70% data quality, 30% financial health
-  return dataQualityScore * 0.7 + debtScore * 0.3;
+  const minDTE = Math.min(...validDTE);
+  const maxDTE = Math.max(...validDTE);
+  return 1 - normalizeMinMax(debtToEquity, minDTE, maxDTE); // Invert: lower debt is better
 }
 
 export function calculateCompanyScores(
@@ -75,12 +66,8 @@ export function calculateCompanyScores(
     // 3. Valuation Score (P/E ratio normalization)
     const valuationNorm = calculateValuationScore(c.peRatio ?? null, allPERatios);
 
-    // 4. Health Score (data quality + debt-to-equity)
-    const healthNorm = calculateHealthScore(
-      c.debtToEquity ?? null,
-      c.dataQuality?.priceSource || 'unavailable',
-      allDebtToEquity
-    );
+    // 4. Health Score (debt-to-equity)
+    const healthNorm = calculateHealthScore(c.debtToEquity ?? null, allDebtToEquity);
 
     // Weighted composite score (all factors 0-1, normalized)
     const compositeRaw =

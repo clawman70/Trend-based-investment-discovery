@@ -207,5 +207,30 @@ describe('Phase 2 — Intelligence Layer Tests', () => {
       expect(json.length).toBe(2);
       expect(json[0].compositeScore).toBeGreaterThan(0);
     });
+
+    it('health score no longer rewards "data loaded" over real debt-to-equity (Phase 3 reweight)', () => {
+      const healthOnlyWeights = { relevance: 0, convergence: 0, valuation: 0, health: 100 };
+      const base: ScoredCompanyData = {
+        ...mockCompanies[0],
+        ticker: 'DTE1',
+        debtToEquity: 0.5,
+        dataQuality: { priceSource: 'live', growthSource: 'calculated' },
+      };
+      // Same debt-to-equity, but price data failed to load for this one.
+      const sameDebtNoPrice: ScoredCompanyData = {
+        ...base,
+        ticker: 'DTE2',
+        dataQuality: { priceSource: 'unavailable' },
+      };
+
+      const scored = calculateCompanyScores([base, sameDebtNoPrice], healthOnlyWeights);
+      const a = scored.find((c) => c.ticker === 'DTE1')!.compositeScore;
+      const b = scored.find((c) => c.ticker === 'DTE2')!.compositeScore;
+
+      // Identical real debt-to-equity should score identically regardless of whether
+      // the price happened to load — that's exactly what "removing data quality from
+      // the health factor" means.
+      expect(a).toBe(b);
+    });
   });
 });

@@ -286,7 +286,11 @@ export const ResearchReport: React.FC<ResearchReportProps> = ({ report, onLoadTh
                         </span>
                       </td>
                       <td className="py-3 align-top text-center whitespace-nowrap">
-                        {comp.recentRally ? (
+                        {comp.recentRally === null ? (
+                          <span className="inline-block text-zinc-500 font-bold bg-zinc-950/40 border border-zinc-800 rounded px-1.5 py-0.5 text-[9px] tracking-wide">
+                            N/A
+                          </span>
+                        ) : comp.recentRally ? (
                           <span className="inline-block text-rose-500 font-bold bg-rose-950/20 border border-rose-900/40 rounded px-1.5 py-0.5 text-[9px] tracking-wide">
                             ⚠️ YES (Priced In?)
                           </span>

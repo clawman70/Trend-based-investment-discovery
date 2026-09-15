@@ -77,7 +77,7 @@ export interface MentionedCompany {
   ticker: string;
   marketCapTier: 'micro' | 'small' | 'mid' | 'large';
   context: string;
-  recentRally: boolean;
+  recentRally: boolean | null; // computed from real price history, not an AI guess; null = couldn't verify
 }
 
 export interface TrendResearchReport {

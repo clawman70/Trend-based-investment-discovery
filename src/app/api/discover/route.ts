@@ -45,31 +45,36 @@ export async function POST(request: NextRequest) {
       };
     } = {};
 
-    // 1. Fetch AI discovery results for each trend
-    for (const t of trendsList) {
-      const normalizedPayload = JSON.stringify({ trend: t.trim().toLowerCase(), exchange, marketCap });
-      const hash = crypto.createHash('sha256').update(normalizedPayload).digest('hex');
-      const cacheKey = `discovery:${hash}`;
+    // 1. Fetch AI discovery results for each trend in parallel — was sequential, which
+    // made a multi-thesis discovery run take N times as long as it needed to.
+    const perTrendResults = await Promise.all(
+      trendsList.map(async (t): Promise<{ trend: string; companies: DiscoveredCompany[] }> => {
+        const normalizedPayload = JSON.stringify({ trend: t.trim().toLowerCase(), exchange, marketCap });
+        const hash = crypto.createHash('sha256').update(normalizedPayload).digest('hex');
+        const cacheKey = `discovery:${hash}`;
 
-      let companies: DiscoveredCompany[] = [];
-      const cachedResult = (await getCachedData(cacheKey)) as DiscoveryCachePayload | null;
+        const cachedResult = (await getCachedData(cacheKey)) as DiscoveryCachePayload | null;
+        if (cachedResult && Array.isArray(cachedResult.companies)) {
+          return { trend: t, companies: cachedResult.companies };
+        }
 
-      if (cachedResult && Array.isArray(cachedResult.companies)) {
-        companies = cachedResult.companies;
-      } else {
         try {
-          companies = await discoverCompaniesFromAI(t, { exchange, marketCap });
+          const companies = await discoverCompaniesFromAI(t, { exchange, marketCap });
           await setCachedData(cacheKey, 'discovery', { companies }, CACHE_DURATION_MS);
+          return { trend: t, companies };
         } catch (aiErr) {
           console.error(`AI Discovery failed for trend "${t}":`, aiErr);
-          // If we fail on one trend but have others, we can continue.
-          // Otherwise, if it's the only trend, throw.
+          // If we fail on one trend but have others, we can continue with an empty
+          // result for this one. Otherwise, if it's the only trend, throw.
           if (trendsList.length === 1) {
             throw aiErr;
           }
+          return { trend: t, companies: [] };
         }
-      }
+      })
+    );
 
+    for (const { trend: t, companies } of perTrendResults) {
       for (const c of companies) {
         // Same normalization as the validator (e.g. BRK-B -> BRK.B) so gate lookups match
         const upperTicker = normalizeTicker(c.ticker);

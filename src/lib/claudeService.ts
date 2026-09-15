@@ -73,6 +73,8 @@ const newsSentimentSchema = z.object({
 const buildDiscoveryPrompt = (trend: string, filters: { exchange: string[]; marketCap: string[] }): string => {
   let prompt = `Based on the following emerging, cross-industry investment trend: "${trend}", identify up to 15 relevant, publicly traded companies.
 
+Search the web before answering — your training data can miss companies that IPO'd, completed a SPAC merger, or were spun off recently. Include any such recent listings that fit this trend; don't rely on training data alone for this.
+
 Your analysis should include companies that are:
 1. Directly operating within this trend.
 2. Adjacent to the trend and uniquely positioned to benefit from its growth.
@@ -111,6 +113,7 @@ export const discoverCompaniesFromAI = async (
     const response = await client.messages.parse({
       model: CLAUDE_MODEL,
       max_tokens: 4096,
+      tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 5 }],
       output_config: { format: zodOutputFormat(discoveryOutputSchema), effort: 'low' },
       messages: [{ role: 'user', content: buildDiscoveryPrompt(trend, filters) }],
     });
@@ -118,6 +121,12 @@ export const discoverCompaniesFromAI = async (
     if (!response.parsed_output) {
       throw new Error('Claude returned a response that did not match the expected schema.');
     }
+
+    const searched = response.content.some((b) => b.type === 'server_tool_use' || b.type === 'web_search_tool_result');
+    if (!searched) {
+      console.warn(`[Discovery] Claude did not search the web for trend "${trend}" — results rely on training data only this time.`);
+    }
+
     return response.parsed_output.companies;
   } catch (error) {
     console.error('Error calling Claude for discovery:', describeApiError(error));
