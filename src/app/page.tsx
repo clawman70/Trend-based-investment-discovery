@@ -353,7 +353,7 @@ export default function Home() {
             <span>TERMINAL STATUS: ONLINE</span>
           </div>
           <div className="flex items-center space-x-4">
-            <span>AI: GEMINI</span>
+            <span>AI: CLAUDE</span>
             <span>DATA: FINNHUB + YAHOO FINANCE</span>
           </div>
         </div>

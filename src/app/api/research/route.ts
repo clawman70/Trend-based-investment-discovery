@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createScan, findCachedScan } from '@/lib/stores/researchStore';
-import { generateTrendResearchReport } from '@/lib/geminiService';
+import { generateTrendResearchReport } from '@/lib/claudeService';
 import { getDemoResearchReport, isDemoMode } from '@/lib/demoData';
 
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days

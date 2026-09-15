@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCachedData, setCachedData } from '@/lib/dbHelper';
-import { getValueChainPositionFromAI } from '@/lib/geminiService';
+import { getValueChainPositionFromAI } from '@/lib/claudeService';
 import { fetchMetrics, fetchProfile, fetchQuote, isFinnhubConfigured, normalizeMetrics } from '@/lib/finnhubService';
 import { fetchCompanyProfile } from '@/lib/yahooService';
 import { getDemoCompanyDetails, isDemoMode } from '@/lib/demoData';

@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 import { POST as analyzeTrendPOST } from '../app/api/analyze-trend/route';
 import { POST as discoverPOST } from '../app/api/discover/route';
 import { POST as scorePOST } from '../app/api/score/route';
-import * as geminiService from '../lib/geminiService';
+import * as claudeService from '../lib/claudeService';
 import * as tickerValidator from '../lib/tickerValidator';
 import { calculateCompanyScores } from '../lib/scoring';
 import { ScoredCompanyData } from '../lib/types';
@@ -13,7 +13,7 @@ vi.mock('../lib/tickerValidator', async (importOriginal) => {
   return { ...actual, validateTickers: vi.fn() };
 });
 
-vi.mock('../lib/geminiService', () => ({
+vi.mock('../lib/claudeService', () => ({
   discoverCompaniesFromAI: vi.fn(),
   analyzeTrendFromAI: vi.fn(),
 }));
@@ -26,7 +26,7 @@ vi.mock('../lib/dbHelper', () => ({
 describe('Phase 2 — Intelligence Layer Tests', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    process.env.GOOGLE_GENAI_API_KEY = 'TEST_KEY';
+    process.env.ANTHROPIC_API_KEY = 'TEST_KEY';
   });
 
   afterEach(() => {
@@ -34,7 +34,7 @@ describe('Phase 2 — Intelligence Layer Tests', () => {
   });
 
   describe('POST /api/analyze-trend', () => {
-    it('should call Gemini and return trend report card', async () => {
+    it('should call Claude and return trend report card', async () => {
       const mockReport = {
         maturityStage: 'Growth' as const,
         estimatedTAM: '$10 Billion',
@@ -44,7 +44,7 @@ describe('Phase 2 — Intelligence Layer Tests', () => {
         adjacentTrends: ['Adj 1', 'Adj 2'],
       };
 
-      vi.mocked(geminiService.analyzeTrendFromAI).mockResolvedValue(mockReport);
+      vi.mocked(claudeService.analyzeTrendFromAI).mockResolvedValue(mockReport);
 
       const request = new NextRequest('http://localhost:3000/api/analyze-trend', {
         method: 'POST',
@@ -65,7 +65,7 @@ describe('Phase 2 — Intelligence Layer Tests', () => {
   describe('Multi-trend Convergence in POST /api/discover', () => {
     it('should find intersecting tickers, set convergence scores, and merge rationales', async () => {
       // Mock discovery for Trend 1
-      vi.mocked(geminiService.discoverCompaniesFromAI)
+      vi.mocked(claudeService.discoverCompaniesFromAI)
         .mockImplementationOnce(async () => {
           return [
             { ticker: 'AAPL', companyName: 'Apple Inc.', rationale: 'Fits trend 1', relevanceScore: 8 },

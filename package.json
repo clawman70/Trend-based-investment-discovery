@@ -15,14 +15,15 @@
     "db:studio": "prisma studio"
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
+    "@anthropic-ai/sdk": "^0.126.0",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "next": "15.5.18",
     "pg": "^8.23.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "yahoo-finance2": "4.0.2"
+    "yahoo-finance2": "4.0.2",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

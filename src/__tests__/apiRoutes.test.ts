@@ -7,7 +7,7 @@ import { GET as companyDetailsGET } from '../app/api/company-details/route';
 import { GET as newsGET } from '../app/api/news/route';
 import { GET as peersGET } from '../app/api/peers/route';
 import * as tickerValidator from '../lib/tickerValidator';
-import * as geminiService from '../lib/geminiService';
+import * as claudeService from '../lib/claudeService';
 import * as finnhubService from '../lib/finnhubService';
 import * as yahooService from '../lib/yahooService';
 import type { FinnhubQuote, FinnhubNewsItem } from '../lib/finnhubService';
@@ -35,7 +35,7 @@ vi.mock('../lib/yahooService', () => ({
   fetchCompanyProfile: vi.fn(),
 }));
 
-vi.mock('../lib/geminiService', () => ({
+vi.mock('../lib/claudeService', () => ({
   discoverCompaniesFromAI: vi.fn(),
   analyzeNewsSentimentFromAI: vi.fn(),
   getValueChainPositionFromAI: vi.fn(),
@@ -52,7 +52,7 @@ describe('API Route Handlers', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     process.env.FINNHUB_API_KEY = 'TEST_KEY';
-    process.env.GOOGLE_GENAI_API_KEY = 'TEST_KEY';
+    process.env.ANTHROPIC_API_KEY = 'TEST_KEY';
     delete process.env.DEMO_MODE;
   });
 
@@ -89,7 +89,7 @@ describe('API Route Handlers', () => {
       );
 
     it('should return discovered companies and drop invalid tickers', async () => {
-      vi.mocked(geminiService.discoverCompaniesFromAI).mockResolvedValue([
+      vi.mocked(claudeService.discoverCompaniesFromAI).mockResolvedValue([
         { ticker: 'AAPL', companyName: 'Apple Inc.', rationale: 'Direct', relevanceScore: 8 },
         { ticker: 'XYZ_FAKE', companyName: 'Fake Corp', rationale: 'Adjacent', relevanceScore: 5 },
       ]);
@@ -110,7 +110,7 @@ describe('API Route Handlers', () => {
     });
 
     it('should normalize share-class tickers so they match the validator (BRK-B -> BRK.B)', async () => {
-      vi.mocked(geminiService.discoverCompaniesFromAI).mockResolvedValue([
+      vi.mocked(claudeService.discoverCompaniesFromAI).mockResolvedValue([
         { ticker: 'brk-b', companyName: 'Berkshire Hathaway', rationale: 'Adjacent', relevanceScore: 6 },
       ]);
       vi.mocked(tickerValidator.validateTickers).mockResolvedValue({ valid: ['BRK.B'], invalid: [], bypassed: false });
@@ -120,7 +120,7 @@ describe('API Route Handlers', () => {
     });
 
     it('should report when validation was bypassed', async () => {
-      vi.mocked(geminiService.discoverCompaniesFromAI).mockResolvedValue([
+      vi.mocked(claudeService.discoverCompaniesFromAI).mockResolvedValue([
         { ticker: 'AAPL', companyName: 'Apple Inc.', rationale: 'Direct', relevanceScore: 8 },
       ]);
       vi.mocked(tickerValidator.validateTickers).mockResolvedValue({ valid: ['AAPL'], invalid: [], bypassed: true });
@@ -267,7 +267,7 @@ describe('API Route Handlers', () => {
       });
       vi.mocked(finnhubService.fetchQuote).mockResolvedValue(quote(330));
       vi.mocked(yahooService.fetchCompanyProfile).mockResolvedValue(null);
-      vi.mocked(geminiService.getValueChainPositionFromAI).mockResolvedValue(null);
+      vi.mocked(claudeService.getValueChainPositionFromAI).mockResolvedValue(null);
 
       const response = await details('?ticker=AAPL&trend=Edge%20AI');
       expect(response.status).toBe(200);
@@ -304,7 +304,7 @@ describe('API Route Handlers', () => {
       expect(json.description).toBe('Apple designs smartphones.');
       expect(json.industry).toBe('Consumer Electronics');
       expect(json.ceo).toBe('Jane Doe');
-      expect(geminiService.getValueChainPositionFromAI).not.toHaveBeenCalled(); // no trend supplied
+      expect(claudeService.getValueChainPositionFromAI).not.toHaveBeenCalled(); // no trend supplied
     });
 
     it('should return 404 when neither a profile nor a quote exists', async () => {
@@ -337,7 +337,7 @@ describe('API Route Handlers', () => {
 
     it('should return real headlines newest-first with AI sentiment', async () => {
       vi.mocked(finnhubService.fetchCompanyNews).mockResolvedValue([article('Older', 1000), article('Newer', 2000)]);
-      vi.mocked(geminiService.analyzeNewsSentimentFromAI).mockResolvedValue({
+      vi.mocked(claudeService.analyzeNewsSentimentFromAI).mockResolvedValue({
         sentiment: 'Bullish',
         sentimentScore: 0.6,
         summary: 'Positive momentum.',
@@ -352,7 +352,7 @@ describe('API Route Handlers', () => {
 
     it('should return sentiment null (not a made-up verdict) when AI sentiment is unavailable', async () => {
       vi.mocked(finnhubService.fetchCompanyNews).mockResolvedValue([article('Headline', 1000)]);
-      vi.mocked(geminiService.analyzeNewsSentimentFromAI).mockResolvedValue(null);
+      vi.mocked(claudeService.analyzeNewsSentimentFromAI).mockResolvedValue(null);
 
       const json = await (await news('?ticker=AAPL')).json();
       expect(json.news.length).toBe(1);

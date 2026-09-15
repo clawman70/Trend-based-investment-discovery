@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCachedData, setCachedData } from '@/lib/dbHelper';
-import { analyzeNewsSentimentFromAI, NewsSentiment } from '@/lib/geminiService';
+import { analyzeNewsSentimentFromAI, NewsSentiment } from '@/lib/claudeService';
 import { fetchCompanyNews, isFinnhubConfigured } from '@/lib/finnhubService';
 import { getDemoNews, isDemoMode } from '@/lib/demoData';
 

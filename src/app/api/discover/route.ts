@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { getCachedData, setCachedData } from '@/lib/dbHelper';
-import { discoverCompaniesFromAI } from '@/lib/geminiService';
+import { discoverCompaniesFromAI } from '@/lib/claudeService';
 import { normalizeTicker, validateTickers } from '@/lib/tickerValidator';
 import { DiscoveredCompany } from '@/lib/types';
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCachedData, setCachedData } from '@/lib/dbHelper';
-import { analyzeTrendFromAI } from '@/lib/geminiService';
+import { analyzeTrendFromAI } from '@/lib/claudeService';
 import { TrendAnalysis } from '@/lib/types';
 
 const CACHE_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days

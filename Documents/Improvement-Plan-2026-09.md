@@ -113,41 +113,31 @@ These are estimates. Phase 2 replaces them with measured numbers.
 - [x] Calling `/api/research` without auth returns a 401 — verified live against a running dev server (401 no creds, 401 wrong creds, 200 correct creds, page itself also gated).
 - [ ] A starred ticker is still on the watchlist after `npm run dev` restarts. **Code-complete and covered by mocked-Prisma tests, but not verified against a live Postgres** — Docker Desktop would not finish starting in this environment (its logs stopped updating mid-launch, most likely stuck on a Windows permission prompt). To finish verifying: get Docker Desktop running, then `npm run db:up && npm run db:migrate`, star a ticker, restart `npm run dev`, confirm it's still there.
 
-### Phase 2 — AI provider layer + bake-off (≈2 sessions) 🟠
-**Goal:** Choose the engine with data instead of opinion.
+### Phase 2 — AI provider layer + bake-off — **skipped by decision, 2026-09-15**
+**Original goal:** Choose the engine with data instead of opinion.
 
-- Create a single `src/lib/ai/` interface with `analyzeTrend`, `discoverCompanies`, `researchScan`, and `summarizeSentiment`, plus adapters for Gemini, Claude, and OpenAI using each official SDK. Select the model per task via env vars (for example, `AI_MODEL_RESEARCH=claude-sonnet-5`).
-- Log token usage and cost for every call (input, output, cached, searches).
-- Build a **golden set of 20 theses** (mix of mature and emerging, plus 3 deliberately obscure ones).
-- Run every candidate: Gemini 3.8 Flash, Claude Sonnet 5, GPT-5.4-mini, GPT-5.4, and Claude Haiku 4.5 for discovery only.
+At this app's volume (a POC, used in a limited fashion), Jeff decided the cost gap between providers is a few dollars a month either way — not worth a formal bake-off. Decision: **switch straight to Claude Sonnet 5** for every AI call, no multi-provider abstraction layer.
 
-**Metrics per model**
-| Metric | How |
-|--------|-----|
-| Ticker validity rate | % of returned tickers that pass the Finnhub symbol gate |
-| Relevance precision | You score 5 theses by hand (keep / drop per company); an LLM judge scores the rest |
-| Source validity (research) | % of cited URLs that resolve and actually mention the claim |
-| Recency | % of theses backed by a source dated within 30 days |
-| Cost per run | From the usage logs |
-| Latency | p50 / p90 seconds |
+What that meant in practice (see commit "switch AI provider to Claude Sonnet 5", 2026-09-15):
+- Replaced `src/lib/geminiService.ts` with `src/lib/claudeService.ts` — same exported function signatures, so the five route files needed only an import-path change.
+- Structured JSON output moved from hand-written JSON schemas to Claude's native structured outputs (Zod schema → `output_config.format` via `client.messages.parse()`).
+- **Research scans needed more than a model swap.** Gemini's grounding was doing real work — Claude's training data isn't current, so a plain swap would have made "find trends from the last 30 days" silently hallucinate from stale training data instead of real search results. Fixed by wiring in Claude's `web_search` server tool, **and** pulling forward part of Phase 3's "real citations" item early: every cited URL is now cross-checked against what `web_search` actually returned that turn (`reconcileSources` in `claudeService.ts`) — a source the model didn't actually retrieve is dropped, not trusted. Unit-tested in `src/__tests__/claudeService.test.ts`.
+- Effort right-sized per call (also pulled forward from Phase 3): `low` for discovery/trend-analysis/sentiment/value-chain (structured extraction, doesn't need deep reasoning), `high` for research (multi-step web search synthesis, where it's worth the cost).
+- Dropped the multi-provider adapter layer, the golden-set bake-off, and the usage/cost logging this phase originally called for — revisit if usage grows enough that the cost gap becomes real money, or if output quality becomes a concern.
 
-**Decision rule:** pick the cheapest model within 5 points of the best on validity and precision. If none is close, pick the best.
-
-**Success criteria**
-- [ ] Changing one env var switches providers with no code changes.
-- [ ] A bake-off report in `Documents/` shows a measured cost and quality table.
+**Not live-verified:** no Anthropic API key was available in this environment, so `tsc`/`eslint`/`vitest`/`next build` all pass and 8 new unit tests cover the citation-reconciliation logic directly, but the actual API calls (structured output + web search together, in particular) have not been exercised against the real API. First `npm run dev` session with a real key should treat Discover and Research as a smoke test.
 
 ### Phase 3 — Output quality upgrades (≈2–3 sessions) 🟡
 - **Ground discovery:** give the discovery call web search so it picks up recent listings. Then check each company against the user's market-cap filter using real data from Phase 0 and drop the ones that don't fit.
-- **Use real citations:** build `sources` from the provider's grounding or citation metadata, never from URLs the model types out.
+- [x] **Use real citations** — done early, folded into the Phase 2 provider switch (2026-09-15): every research `sources` entry is cross-checked against a real `web_search` result before it reaches the UI; see `reconcileSources` in `src/lib/claudeService.ts`.
 - **Replace AI guesses with facts:** compute `recentRally` (>30% in 6 months) from price history.
 - **Make the composite score meaningful:** now that P/E, debt-to-equity, and growth are real, reweight the score and remove "data quality" from the health factor.
 - **Merge calls:** combine trend analysis and discovery into one structured call per thesis, and run theses in parallel.
-- **Right-size thinking:** use high effort for research scans, medium for discovery, and none/low on the cheap model for sentiment and value chain.
+- [x] **Right-size thinking** — done early, folded into the Phase 2 provider switch (2026-09-15): `effort: 'low'` for discovery/trend-analysis/sentiment/value-chain, `effort: 'high'` for research.
 
 **Success criteria**
 - [ ] A thesis about a company that IPO'd in the last 60 days finds that company.
-- [ ] 100% of displayed citations come from grounding metadata.
+- [x] 100% of displayed citations come from grounding metadata (real `web_search` results — see Phase 2 note above; not yet live-verified against the real API).
 - [ ] A 2-thesis discovery run finishes in under 50% of today's time.
 
 ### Phase 4 — Cost controls (≈1 session) 🟢

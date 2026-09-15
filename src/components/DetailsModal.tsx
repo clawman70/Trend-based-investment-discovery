@@ -346,7 +346,7 @@ export const DetailsModal: React.FC<DetailsModalProps> = ({ ticker, trend, onClo
                         <div className="flex items-center justify-between">
                           <div>
                             <h4 className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest font-bold mb-1">AI News Sentiment Scorecard</h4>
-                            <span className="text-xs text-zinc-400">Gemini evaluation of recent headlines</span>
+                            <span className="text-xs text-zinc-400">Claude evaluation of recent headlines</span>
                           </div>
                           {newsData.sentiment && (
                             <span className={`px-3 py-1 rounded text-xs font-bold border font-mono ${getSentimentColor(newsData.sentiment.sentiment)}`}>
@@ -388,7 +388,7 @@ export const DetailsModal: React.FC<DetailsModalProps> = ({ ticker, trend, onClo
                           <p className="text-xs font-mono text-zinc-600 italic">
                             {newsData.news.length === 0
                               ? 'No recent headlines to analyze.'
-                              : 'AI sentiment unavailable (check GOOGLE_GENAI_API_KEY or try again later).'}
+                              : 'AI sentiment unavailable (check ANTHROPIC_API_KEY or try again later).'}
                           </p>
                         )}
                       </div>
