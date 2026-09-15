@@ -18,7 +18,7 @@ A Bloomberg-style research terminal. You describe a market trend in plain Englis
 | What | Source | Notes |
 |------|--------|-------|
 | Discovery, trend analysis, news sentiment, value-chain | Claude (`claude-sonnet-5` by default) | Model configurable with `CLAUDE_MODEL`. See `src/lib/claudeService.ts`. |
-| Research tab (grounded trend scan) | Gemini (`gemini-3.8-flash` by default), with Google Search grounding | Model configurable with `GEMINI_MODEL`. Runs on Google's own search index — chosen specifically for this task because it's recency- and breadth-critical (last-30-days signals across patents, government filings, niche technical sources), which is more a search-index property than a reasoning one. Every citation is cross-checked against a real grounding result before it's shown — see `src/lib/geminiService.ts`. |
+| Research tab (grounded trend scan) | Gemini (`gemini-3.8-flash` by default), with Google Search grounding | Model configurable with `GEMINI_MODEL`. Runs on Google's own search index — chosen specifically for this task because it's recency- and breadth-critical (last-30-days signals across patents, government filings, niche technical sources), which is more a search-index property than a reasoning one. Two Gemini calls per scan, not one: a freeform search call, then a structuring call that's only allowed to cite URLs the first call actually found. (Live testing showed a single call combining search + structured output would often skip the real search and write convincing-looking fake citations instead — the two-call split fixes that, at roughly double the token cost per scan.) Every citation is cross-checked again against the real grounding results before it's shown, and the scan fails outright rather than return an ungrounded report if Google Search never actually returns anything — see `src/lib/geminiService.ts`. |
 | Ticker validation (hallucination gate) | Finnhub `/stock/symbol` (free) | Accepts NASDAQ, NYSE, NYSE American, NYSE Arca, Cboe BZX. Rejects OTC, ETFs, warrants, units. Cached 24h. |
 | Live price | Finnhub `/quote` (free) | Cached 5 min |
 | Market cap, P/E, revenue growth, debt/equity, free cash flow (est.) | Finnhub `/stock/metric` (free) | Cached 24h. FCF is derived as market cap ÷ price-to-FCF. |
@@ -143,6 +143,5 @@ See `Documents/Improvement-Plan-2026-09.md` for the full roadmap.
 
 - **The composite score still weights "data availability"** in its health factor. Reweighting is Phase 3.
 - **The market-cap filter is passed to the AI but not enforced** against real market cap yet (Phase 3).
-- **Research citations are written by the model**, not taken from grounding metadata, so verify links (Phase 3).
 - **The app password gate is a deterrent, not compliance-grade auth.** No rate limiting, no audit log, no per-user accounts — fine for a personal tool, not for anything handling other people's data.
 - **Portfolio→watchlist links have a real foreign key on the portfolio side only.** Deleting a watchlist item that's linked to a portfolio never fails, it just quietly drops from that portfolio's view — same behavior with or without Postgres.

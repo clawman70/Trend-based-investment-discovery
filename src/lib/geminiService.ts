@@ -10,11 +10,21 @@
  * doesn't carry over to general reasoning tasks, which is why the rest of the app
  * stays on Claude.
  *
- * Citation integrity: every source the model cites is cross-checked against
- * `groundingMetadata.groundingChunks` — the real pages Google Search actually
- * returned this turn — before it's shown. A source whose URL isn't in there is
- * dropped, not trusted. Mirrors the same check claudeService.ts does against
- * Claude's web_search results.
+ * Two-call design (not one): live testing against the real API showed that when a
+ * single call combines Google Search grounding with a large structured-output schema,
+ * the model frequently skips the actual search and instead writes plausible-looking
+ * fabricated citations (same URL format as real grounding redirects) — same prompt,
+ * same schema, inconsistent search behavior from call to call. So this is split into
+ * two calls: (1) a freeform search call with no schema, so the model's full attention
+ * goes to actually searching, retried if grounding never fires; (2) a schema-only
+ * reformat call (no search tool) that converts that narrative into structured JSON,
+ * restricted to citing only the real URLs collected in step 1. Costs roughly 2x the
+ * tokens of a single call — accepted tradeoff for citation reliability.
+ *
+ * Citation integrity: even after that, every source the model cites in step 2 is
+ * cross-checked again against the real `groundingChunks` from step 1 before it's shown
+ * — a URL that isn't in there is dropped, not trusted. Mirrors the same check
+ * claudeService.ts does against Claude's web_search results.
  */
 import { GoogleGenAI, Type, GenerateContentResponse } from '@google/genai';
 import { CandidateThesis, MentionedCompany, Source, TrendResearchReport } from './types';
@@ -60,8 +70,7 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promis
   throw lastError || new Error('Max retries exceeded');
 }
 
-// scanDate/domainsScanned/isDemo are set programmatically after the call, not asked of the model
-const trendResearchReportSchema = {
+const structuredReportSchema = {
   type: Type.OBJECT,
   properties: {
     executiveSummary: {
@@ -89,7 +98,7 @@ const trendResearchReportSchema = {
               type: Type.OBJECT,
               properties: {
                 title: { type: Type.STRING },
-                url: { type: Type.STRING, description: 'Must be a URL from your web search results this turn — never a URL you did not actually see.' },
+                url: { type: Type.STRING, description: 'Must be copied exactly from the verified source list provided — never a URL you did not see in that list.' },
                 date: { type: Type.STRING },
                 sourceType: {
                   type: Type.STRING,
@@ -98,7 +107,7 @@ const trendResearchReportSchema = {
               },
               required: ['title', 'url', 'date', 'sourceType'],
             },
-            description: 'Grounded source citations validating the thesis.',
+            description: 'Citations for this thesis, drawn only from the verified source list. Leave empty if no verified source supports this thesis — never invent one.',
           },
         },
         required: ['thesisStatement', 'convergenceType', 'domainsInvolved', 'recencySignal', 'maturity', 'confidence', 'rationale', 'sources'],
@@ -159,15 +168,85 @@ export function reconcileSources(theses: CandidateThesis[], realResults: Map<str
   }));
 }
 
-const RESEARCH_SYSTEM_INSTRUCTION = `Role: You are a research analyst specializing in identifying emerging technology convergence trends for investment purposes. You focus on finding where demand signals in one industry intersect with supply capabilities in another.
+const ANALYST_ROLE_AND_CONSTRAINTS = `Role: You are a research analyst specializing in identifying emerging technology convergence trends for investment purposes. You focus on finding where demand signals in one industry intersect with supply capabilities in another.
 Constraints:
 - Only surface trends that have emerged or significantly accelerated in the past 30 days.
 - Exclude any trend that has been widely covered for more than 180 days — if it is already consensus, it's priced in.
 - Prioritize cross-domain convergence over single-domain trends.
 - For any companies mentioned, flag their market cap tier (micro < $300M, small $300M-$2B, mid $2B-$10B, large > $10B) and check if they have rallied significantly (>30%) in the past 6 months.
-- Source from: research papers, patent filings, government funding announcements, credible technology news, technical YouTube content, patent databases.
-- Every source you cite must be a page you actually found via search this turn. Never invent a source, a URL, or a publication date.
-- Output Format: Return a structured JSON object matching the TrendResearchReport schema.`;
+- Source from: research papers, patent filings, government funding announcements, credible technology news, technical YouTube content, patent databases.`;
+
+const MIN_GROUNDING_CHUNKS = 1;
+
+/**
+ * Step 1: a freeform (no response schema) search call. Keeping the schema out of this
+ * call is deliberate — it's what makes the model reliably invoke Google Search instead
+ * of sometimes skipping it. Retries if the model still doesn't search this attempt.
+ */
+async function runGroundedSearch(searchPrompt: string, maxAttempts = 3): Promise<GenerateContentResponse> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const response = await retryWithBackoff(() =>
+      ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: searchPrompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+          temperature: 0.2,
+        } as unknown as Record<string, unknown>,
+      })
+    );
+
+    const chunkCount = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.length ?? 0;
+    if (chunkCount >= MIN_GROUNDING_CHUNKS) {
+      return response;
+    }
+
+    console.log(`[Gemini Research] Search attempt ${attempt}/${maxAttempts} returned no real grounding results, ${attempt < maxAttempts ? 'retrying' : 'giving up'}...`);
+  }
+
+  throw new Error(
+    'Research scan failed: Google Search grounding did not return any real results after multiple attempts. This means Gemini did not actually search the web this time — try again rather than trust an ungrounded report.'
+  );
+}
+
+/** Step 2: reformat the grounded narrative into the app's structured schema, restricted to citing only real sources. */
+async function structureResearchOutput(narrative: string, realResults: Map<string, { title: string }>): Promise<ParsedResearchOutput> {
+  const verifiedSourceList =
+    realResults.size > 0
+      ? Array.from(realResults.entries())
+          .map(([url, { title }]) => `- ${title}: ${url}`)
+          .join('\n')
+      : '(none found this search)';
+
+  const structurePrompt = `${ANALYST_ROLE_AND_CONSTRAINTS}
+
+Below is a research narrative you (or another analyst) wrote after live Google Search. Convert it into the structured JSON format described by the response schema.
+
+Verified source list — these are the ONLY URLs you may put in any "sources" field, copied exactly as shown. If a claim in the narrative doesn't have a matching verified source, leave that thesis's sources array empty rather than inventing one:
+${verifiedSourceList}
+
+Research narrative to structure:
+${narrative}`;
+
+  const response = await retryWithBackoff(() =>
+    ai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: structurePrompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: structuredReportSchema,
+        temperature: 0.1,
+      } as unknown as Record<string, unknown>,
+    })
+  );
+
+  const jsonString = response.text?.trim();
+  if (!jsonString) {
+    throw new Error('Research scan failed: Gemini returned an empty response while structuring the report.');
+  }
+
+  return JSON.parse(jsonString) as ParsedResearchOutput;
+}
 
 export const generateTrendResearchReport = async (
   domains: string[],
@@ -183,33 +262,28 @@ export const generateTrendResearchReport = async (
   const domainsStr = domains.join(', ');
   const scanDateIso = new Date().toISOString().split('T')[0];
 
-  const prompt =
+  const researchTask =
     mode === 'open' && customPrompt
       ? `What emerging convergence technology trends connect with: "${customPrompt}"?\nFocus on finding where demand signals in one industry intersect with supply capabilities in another.`
       : `Perform an emerging technology scan for cross-domain convergence trends among the following research domains: [${domainsStr}].\nFocus on finding where demand signals in one domain intersect with supply capabilities in another, creating investment opportunities before the broader market recognizes them.`;
 
-  const fullPrompt = `${RESEARCH_SYSTEM_INSTRUCTION}\n\nSearch Context & Scanned Domains: [${domainsStr}]\nInput Prompt: ${prompt}`;
+  const searchPrompt = `${ANALYST_ROLE_AND_CONSTRAINTS}
 
-  const response = await retryWithBackoff(() =>
-    ai.models.generateContent({
-      model: GEMINI_MODEL,
-      contents: fullPrompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: trendResearchReportSchema,
-        tools: [{ googleSearch: {} }],
-        temperature: 0.2,
-      } as unknown as Record<string, unknown>,
-    })
-  );
+You must use Google Search for this task — your training data is not sufficient, since this task specifically requires information from the last 30 days. Perform several distinct searches covering the domains and angles below before writing anything.
 
-  const jsonString = response.text?.trim();
-  if (!jsonString) {
-    throw new Error('Research scan failed: Gemini returned an empty response.');
+Search Context & Scanned Domains: [${domainsStr}]
+Task: ${researchTask}
+
+After searching, write a detailed narrative covering: an executive summary; 2-4 candidate convergence theses (each with a thesis statement, convergence type, domains involved, recency signal, maturity stage, confidence level, and rationale); notable companies mentioned (name, ticker, market cap tier, why relevant, whether it's rallied >30% in 6 months); and any weaker adjacent signals. Cite the specific real source for every factual claim as you go.`;
+
+  const searchResponse = await runGroundedSearch(searchPrompt);
+  const narrative = searchResponse.text?.trim();
+  if (!narrative) {
+    throw new Error('Research scan failed: Gemini returned an empty response during the search step.');
   }
 
-  const parsed = JSON.parse(jsonString) as ParsedResearchOutput;
-  const realGroundingResults = collectGroundingResults(response);
+  const realGroundingResults = collectGroundingResults(searchResponse);
+  const parsed = await structureResearchOutput(narrative, realGroundingResults);
 
   return {
     isDemo: false,
