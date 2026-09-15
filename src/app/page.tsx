@@ -13,6 +13,7 @@ import { PortfoliosView } from '@/components/PortfoliosView';
 import { DetailsModal } from '@/components/DetailsModal';
 import { ResearchPanel } from '@/components/ResearchPanel';
 import { ResearchReport } from '@/components/ResearchReport';
+import { SpendCapBanner } from '@/components/SpendCapBanner';
 import { ScoredCompanyData, Filters, TrendAnalysis, TrendResearchReport } from '@/lib/types';
 import { calculateCompanyScores } from '@/lib/scoring';
 import { passesMarketCapFilter } from '@/lib/marketCapFilter';
@@ -374,6 +375,8 @@ export default function Home() {
             <span>DATA: FINNHUB + YAHOO FINANCE</span>
           </div>
         </div>
+
+        <SpendCapBanner />
 
         {/* Tab Content Router */}
         {activeTab === 'research' && (

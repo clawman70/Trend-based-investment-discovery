@@ -74,7 +74,10 @@ npm run db:migrate   # creates the tables
 ### 4. (Optional) Password-protect the app
 Off by default. Set `APP_PASSWORD` in `.env.local` (and optionally `APP_USERNAME`, default `admin`) before deploying anywhere public — your browser will show a native login prompt for the whole app, API included.
 
-### 5. Run
+### 5. (Optional) Set a daily AI spend cap
+Off by default (a $5/day cap otherwise). Every Claude and Gemini call is logged to a running daily total; once it crosses `DAILY_SPEND_CAP_USD`, a warning banner appears at the top of the app. It's a heads-up against a bug or runaway usage, not real billing data or a hard limit — AI calls keep working as normal past the cap.
+
+### 6. Run
 ```bash
 npm run dev
 ```
@@ -116,16 +119,19 @@ The tests mock every external API and the database, so they run offline and cost
 │   │   │   ├── news/                  # Finnhub headlines + Claude sentiment
 │   │   │   ├── peers/                 # Finnhub peer comparison
 │   │   │   ├── research/              # Gemini research scans (Google Search grounding)
+│   │   │   ├── usage/today/           # Today's estimated AI spend + daily cap status
 │   │   │   ├── validate-ticker/       # Ticker validation endpoint
 │   │   │   └── watchlist/ portfolios/ history/ score/   # Saved items + composite scoring
 │   │   └── page.tsx                   # Main dashboard
-│   ├── components/                    # UI (ResultsTable, DetailsModal, ValidationAlerts, ...)
+│   ├── components/                    # UI (ResultsTable, DetailsModal, ValidationAlerts, SpendCapBanner, ...)
 │   └── lib/
 │       ├── finnhubService.ts          # Rate-limited Finnhub client + metric normalization
 │       ├── yahooService.ts            # Yahoo price history + company profile
 │       ├── tickerValidator.ts         # Hallucination gate (Finnhub symbol directory)
+│       ├── marketCapFilter.ts         # Real market-cap enforcement (post-enrichment)
 │       ├── claudeService.ts           # Claude: discovery, trend analysis, sentiment, value-chain
 │       ├── geminiService.ts           # Gemini: Research tab only, Google Search grounding
+│       ├── usageTracker.ts            # Daily AI spend estimate + cap check (DAILY_SPEND_CAP_USD)
 │       ├── demoData.ts                # DEMO_MODE placeholder fixtures (labeled)
 │       ├── scoring.ts                 # Composite score
 │       ├── prisma.ts                  # Prisma client (Postgres, driver adapter)

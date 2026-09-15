@@ -153,13 +153,29 @@ Fix (Jeff's call: prioritize accuracy over cost — "you don't need to have fake
 - [x] 100% of displayed citations come from grounding metadata (real `web_search` results — see Phase 2 note above; live-verified 2026-09-15, after fixing an unreliable-grounding bug the live test surfaced).
 - [x] A 2-thesis discovery run finishes in under 50% of today's time — both discovery and trend-analysis calls parallelized across theses; not re-benchmarked with a stopwatch, but going from N sequential AI calls to N concurrent ones on independent, non-rate-limited calls comfortably clears the 50% bar.
 
-### Phase 4 — Cost controls (≈1 session) 🟢
-- Enable prompt caching on the static system prompts and schemas (Claude/OpenAI cached input is about 90% cheaper).
-- Run a nightly **batch** job (50% off) to refresh watchlist sentiment and value-chain text, instead of calling the AI when the modal opens.
-- Set a daily spend cap that shows a warning banner once reached.
+### Phase 4 — Cost controls — **reduced scope, done 2026-09-16** 🟢
+Jeff's call when this phase came up: at this app's volume (~50 discovery runs + 20
+research scans/month), prompt caching and batch discounts save fractions of a cent —
+not worth the complexity. The batch job specifically also needs Vercel cron to ever
+fire, which doesn't exist for this app yet. Decision: build only the piece that's a
+safety net rather than a cost optimization, and keep it simple.
+
+- ~~Enable prompt caching on the static system prompts and schemas~~ — skipped, negligible savings at this volume.
+- ~~Run a nightly batch job to refresh watchlist sentiment/value-chain~~ — skipped, same reason, plus needs Vercel cron.
+- [x] **Daily spend cap with a warning banner.** Every Claude and Gemini call now records
+  its real token usage (`response.usage` / `response.usageMetadata`) into a running
+  per-day total via `src/lib/usageTracker.ts` — reuses the existing generic TTL cache
+  (`dbHelper.ts`/`CacheEntry`) rather than a new table, since this is an estimate for a
+  heads-up, not a billing-grade ledger. `GET /api/usage/today` exposes it;
+  `src/components/SpendCapBanner.tsx` shows a warning (matching `ValidationAlerts.tsx`'s
+  style) once today's estimated spend crosses `DAILY_SPEND_CAP_USD` (default $5).
+  Informational only — never blocks an AI call. Usage recording is wrapped so it can
+  never throw or fail the AI response it's tracking. Live-verified: temporarily set the
+  cap to $0.001, made one real Claude call, confirmed the banner appeared with the
+  correct numbers; restored the real default and confirmed it disappeared.
 
 **Success criteria**
-- [ ] The cost dashboard (from the usage logs) shows a ≥30% drop in cost per run compared with the Phase 2 baseline, with no quality loss on the golden set.
+- [~] The cost dashboard (from the usage logs) shows a ≥30% drop in cost per run compared with the Phase 2 baseline, with no quality loss on the golden set. **Not applicable** — no cost-reduction levers were built (deliberately, per the scope decision above), so there's nothing to benchmark a drop against. The spend cap is a guardrail, not an optimization.
 
 ---
 

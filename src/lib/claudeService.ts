@@ -14,6 +14,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 import { DiscoveredCompany, TrendAnalysis } from './types';
+import { recordUsage } from './usageTracker';
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5';
@@ -121,6 +122,7 @@ export const discoverCompaniesFromAI = async (
     if (!response.parsed_output) {
       throw new Error('Claude returned a response that did not match the expected schema.');
     }
+    await recordUsage('claude', response.usage.input_tokens ?? 0, response.usage.output_tokens);
 
     const searched = response.content.some((b) => b.type === 'server_tool_use' || b.type === 'web_search_tool_result');
     if (!searched) {
@@ -157,6 +159,7 @@ Analyze its maturity stage, addressable market size (TAM), key drivers/catalysts
     if (!response.parsed_output) {
       throw new Error('Claude returned a response that did not match the expected schema.');
     }
+    await recordUsage('claude', response.usage.input_tokens ?? 0, response.usage.output_tokens);
     return response.parsed_output;
   } catch (error) {
     console.error('Error calling Claude for trend analysis:', describeApiError(error));
@@ -191,6 +194,7 @@ ${headlines.map((h, i) => `${i + 1}. ${h}`).join('\n')}`;
       output_config: { format: zodOutputFormat(newsSentimentSchema), effort: 'low' },
       messages: [{ role: 'user', content: prompt }],
     });
+    await recordUsage('claude', response.usage.input_tokens ?? 0, response.usage.output_tokens);
     return response.parsed_output ?? null;
   } catch (error) {
     console.error(`Error calling Claude for news sentiment on ${ticker}:`, describeApiError(error));
@@ -223,6 +227,7 @@ Give a concise, professional 1-sentence description (e.g., 'Upstream provider of
       output_config: { effort: 'low' },
       messages: [{ role: 'user', content: prompt }],
     });
+    await recordUsage('claude', response.usage.input_tokens ?? 0, response.usage.output_tokens);
     const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
     return textBlock?.text.trim() || null;
   } catch (error) {

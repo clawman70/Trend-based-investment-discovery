@@ -28,6 +28,7 @@
  */
 import { GoogleGenAI, Type, GenerateContentResponse } from '@google/genai';
 import { CandidateThesis, MentionedCompany, Source, TrendResearchReport } from './types';
+import { recordUsage } from './usageTracker';
 
 const apiKey = process.env.GOOGLE_GENAI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
@@ -197,6 +198,8 @@ async function runGroundedSearch(searchPrompt: string, maxAttempts = 3): Promise
       })
     );
 
+    await recordUsage('gemini', response.usageMetadata?.promptTokenCount ?? 0, response.usageMetadata?.candidatesTokenCount ?? 0);
+
     const chunkCount = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.length ?? 0;
     if (chunkCount >= MIN_GROUNDING_CHUNKS) {
       return response;
@@ -240,6 +243,8 @@ ${narrative}`;
       } as unknown as Record<string, unknown>,
     })
   );
+
+  await recordUsage('gemini', response.usageMetadata?.promptTokenCount ?? 0, response.usageMetadata?.candidatesTokenCount ?? 0);
 
   const jsonString = response.text?.trim();
   if (!jsonString) {
