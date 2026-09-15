@@ -17,7 +17,7 @@ A Bloomberg-style research terminal. You describe a market trend in plain Englis
 
 | What | Source | Notes |
 |------|--------|-------|
-| Discovery, trend analysis, news sentiment, value-chain | Claude (`claude-sonnet-5` by default) | Model configurable with `CLAUDE_MODEL`. See `src/lib/claudeService.ts`. |
+| Discovery, trend analysis, news sentiment, value-chain | Claude (`claude-sonnet-5` by default) | Model configurable with `CLAUDE_MODEL`. Discovery searches the web (`web_search_20260209`) before answering, so it can catch recent IPOs/SPAC mergers/spin-offs the model's training data would miss — every ticker it returns still goes through the hallucination gate below regardless of whether it searched. See `src/lib/claudeService.ts`. |
 | Research tab (grounded trend scan) | Gemini (`gemini-3.8-flash` by default), with Google Search grounding | Model configurable with `GEMINI_MODEL`. Runs on Google's own search index — chosen specifically for this task because it's recency- and breadth-critical (last-30-days signals across patents, government filings, niche technical sources), which is more a search-index property than a reasoning one. Two Gemini calls per scan, not one: a freeform search call, then a structuring call that's only allowed to cite URLs the first call actually found. (Live testing showed a single call combining search + structured output would often skip the real search and write convincing-looking fake citations instead — the two-call split fixes that, at roughly double the token cost per scan.) Every citation is cross-checked again against the real grounding results before it's shown, and the scan fails outright rather than return an ungrounded report if Google Search never actually returns anything — see `src/lib/geminiService.ts`. |
 | Ticker validation (hallucination gate) | Finnhub `/stock/symbol` (free) | Accepts NASDAQ, NYSE, NYSE American, NYSE Arca, Cboe BZX. Rejects OTC, ETFs, warrants, units. Cached 24h. |
 | Live price | Finnhub `/quote` (free) | Cached 5 min |
@@ -27,6 +27,8 @@ A Bloomberg-style research terminal. You describe a market trend in plain Englis
 | 1Y / 5Y price growth | Yahoo Finance weekly price history | Falls back to Finnhub 52-week return for 1Y |
 | News | Finnhub `/company-news` (last 14 days) | |
 | Peers | Finnhub `/stock/peers` | Up to 8 peers |
+| Market-cap filter enforcement | Real Finnhub market cap, checked after enrichment | The AI only sees your market-cap filter as a text hint; a company whose *real* market cap doesn't match your selected tier is dropped after enrichment, not trusted from the model's guess. A company with unknown market cap is kept (can't verify, so it isn't filtered out). See `src/lib/marketCapFilter.ts`. |
+| "6M Rally >30%" on Research-tab companies | Computed from real Finnhub price + Yahoo 6-month history | Used to be an AI guess. Now: real, or **N/A** when the ticker isn't a real quotable US security (private companies, foreign tickers) — never guessed. See `fetchSixMonthRally` in `src/lib/yahooService.ts`. |
 
 **Finnhub free-tier budget:** 60 calls/minute. All Finnhub calls share one rate limiter (capped at 55/min), so a big discovery run (25+ companies) may pause briefly instead of failing.
 
@@ -65,7 +67,7 @@ npm run db:up       # starts Postgres via Docker Compose (Docker Desktop must be
 npm run db:migrate   # creates the tables
 ```
 
-`.env.example` already has the matching `POSTGRES_PRISMA_URL` / `POSTGRES_URL_NON_POOLING` for this local database — copy them into `.env.local` if you haven't already. For a production deploy, point those two variables at a real Postgres instance (Vercel Postgres or [Neon](https://neon.tech) both work) and run `npm run db:deploy` once instead.
+`.env.example` already has the matching `POSTGRES_PRISMA_URL` / `POSTGRES_URL_NON_POOLING` for this local database — copy them into `.env.local` if you haven't already. **Docker Compose is local-dev only — it doesn't exist on Vercel.** For a production deploy, point those two variables at a real hosted Postgres instance (Vercel Postgres or [Neon](https://neon.tech) both work) and run `npm run db:deploy` once instead.
 
 **How the fallback works:** every request checks whether Postgres is reachable. If it is, data is read from and written to Postgres. If it isn't (no `POSTGRES_PRISMA_URL`, or the database is down), the app falls back to in-memory storage automatically — no errors, no restart needed, it just won't remember anything past the current server process. You'll see `[DB] Postgres unavailable, falling back to in-memory store` in the server log when this happens.
 
@@ -141,7 +143,5 @@ The tests mock every external API and the database, so they run offline and cost
 
 See `Documents/Improvement-Plan-2026-09.md` for the full roadmap.
 
-- **The composite score still weights "data availability"** in its health factor. Reweighting is Phase 3.
-- **The market-cap filter is passed to the AI but not enforced** against real market cap yet (Phase 3).
 - **The app password gate is a deterrent, not compliance-grade auth.** No rate limiting, no audit log, no per-user accounts — fine for a personal tool, not for anything handling other people's data.
 - **Portfolio→watchlist links have a real foreign key on the portfolio side only.** Deleting a watchlist item that's linked to a portfolio never fails, it just quietly drops from that portfolio's view — same behavior with or without Postgres.
