@@ -53,7 +53,22 @@ Copy `.env.example` to `.env.local` and fill in:
 - **No Finnhub key:** a red banner says tickers weren't verified. Prices and fundamentals return a clear error, and the details window shows an error instead of fake data.
 - **No Gemini key:** discovery and research return an error, and news sentiment shows "unavailable".
 
-### 3. Run
+### 3. Set up persistence (optional but recommended)
+Without a database the app still runs — the watchlist, portfolios, history and research scans just live in memory and reset every time the server restarts. To make them stick:
+
+```bash
+npm run db:up       # starts Postgres via Docker Compose (Docker Desktop must be running)
+npm run db:migrate   # creates the tables
+```
+
+`.env.example` already has the matching `POSTGRES_PRISMA_URL` / `POSTGRES_URL_NON_POOLING` for this local database — copy them into `.env.local` if you haven't already. For a production deploy, point those two variables at a real Postgres instance (Vercel Postgres or [Neon](https://neon.tech) both work) and run `npm run db:deploy` once instead.
+
+**How the fallback works:** every request checks whether Postgres is reachable. If it is, data is read from and written to Postgres. If it isn't (no `POSTGRES_PRISMA_URL`, or the database is down), the app falls back to in-memory storage automatically — no errors, no restart needed, it just won't remember anything past the current server process. You'll see `[DB] Postgres unavailable, falling back to in-memory store` in the server log when this happens.
+
+### 4. (Optional) Password-protect the app
+Off by default. Set `APP_PASSWORD` in `.env.local` (and optionally `APP_USERNAME`, default `admin`) before deploying anywhere public — your browser will show a native login prompt for the whole app, API included.
+
+### 5. Run
 ```bash
 npm run dev
 ```
@@ -73,7 +88,7 @@ npx tsc --noEmit
 npm run lint
 ```
 
-The tests mock every external API, so they run offline and cost nothing.
+The tests mock every external API and the database, so they run offline and cost nothing.
 
 ---
 
@@ -81,7 +96,11 @@ The tests mock every external API, so they run offline and cost nothing.
 
 ```text
 ├── Documents/                         # Requirements, specs, improvement plan (source of truth)
+├── docker-compose.yml                 # Local Postgres for dev (npm run db:up)
+├── prisma/schema.prisma               # Database schema
+├── prisma.config.ts                   # Prisma CLI connection config (migrate/generate)
 ├── src/
+│   ├── middleware.ts                  # Optional APP_PASSWORD gate (whole app, incl. API)
 │   ├── app/
 │   │   ├── api/
 │   │   │   ├── analyze-trend/         # Gemini trend diagnostics
@@ -92,8 +111,7 @@ The tests mock every external API, so they run offline and cost nothing.
 │   │   │   ├── peers/                 # Finnhub peer comparison
 │   │   │   ├── research/              # Gemini grounded research scans
 │   │   │   ├── validate-ticker/       # Ticker validation endpoint
-│   │   │   ├── watchlist/ portfolios/ history/   # Saved items (in-memory for now)
-│   │   │   └── score/                 # Composite scoring
+│   │   │   └── watchlist/ portfolios/ history/ score/   # Saved items + composite scoring
 │   │   └── page.tsx                   # Main dashboard
 │   ├── components/                    # UI (ResultsTable, DetailsModal, ValidationAlerts, ...)
 │   └── lib/
@@ -103,7 +121,11 @@ The tests mock every external API, so they run offline and cost nothing.
 │       ├── geminiService.ts           # Gemini prompts & schemas
 │       ├── demoData.ts                # DEMO_MODE placeholder fixtures (labeled)
 │       ├── scoring.ts                 # Composite score
-│       ├── dbHelper.ts / memoryStore.ts  # In-memory cache & storage
+│       ├── prisma.ts                  # Prisma client (Postgres, driver adapter)
+│       ├── dbHelper.ts                # isDbAvailable() + TTL cache (Postgres, falls back to memory)
+│       ├── memoryStore.ts             # In-memory fallback storage
+│       ├── stores/                    # One module per resource: Postgres if available, else memory
+│       │   ├── historyStore.ts / watchlistStore.ts / portfolioStore.ts / researchStore.ts
 │       └── types.ts
 └── v1_backup/                         # Original v1 code
 ```
@@ -114,8 +136,8 @@ The tests mock every external API, so they run offline and cost nothing.
 
 See `Documents/Improvement-Plan-2026-09.md` for the full roadmap.
 
-- **Saved data is in memory only.** The watchlist, portfolios and history reset on restart and don't work reliably on Vercel. This is Phase 1 of the plan.
-- **API routes have no authentication.** Don't deploy publicly yet (Phase 1).
 - **The composite score still weights "data availability"** in its health factor. Reweighting is Phase 3.
 - **The market-cap filter is passed to the AI but not enforced** against real market cap yet (Phase 3).
 - **Research citations are written by the model**, not taken from grounding metadata, so verify links (Phase 3).
+- **The app password gate is a deterrent, not compliance-grade auth.** No rate limiting, no audit log, no per-user accounts — fine for a personal tool, not for anything handling other people's data.
+- **Portfolio→watchlist links have a real foreign key on the portfolio side only.** Deleting a watchlist item that's linked to a portfolio never fails, it just quietly drops from that portfolio's view — same behavior with or without Postgres.

@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trend-discovery-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trend_discovery
+      POSTGRES_PASSWORD: trend_discovery_dev
+      POSTGRES_DB: trend_discovery
+    ports:
+      - "5432:5432"
+    volumes:
+      - trend_discovery_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trend_discovery -d trend_discovery"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  trend_discovery_pgdata:

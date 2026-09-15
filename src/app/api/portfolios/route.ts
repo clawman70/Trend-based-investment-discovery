@@ -1,33 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import crypto from 'crypto';
 import {
-  memoryTrendPortfolios,
-  memoryPortfolioItems,
-  memoryWatchlistItems,
-  MemoryTrendPortfolio,
-  MemoryPortfolioItem,
-} from '@/lib/memoryStore';
+  addPortfolioItem,
+  createPortfolio,
+  deletePortfolio,
+  listPortfoliosWithItems,
+  removePortfolioItem,
+} from '@/lib/stores/portfolioStore';
 import { fetchQuotes, isFinnhubConfigured } from '@/lib/finnhubService';
 
 export async function GET() {
   try {
-    const rawPortfolios = memoryTrendPortfolios.map((p) => {
-      const items = memoryPortfolioItems.filter((i) => i.portfolioId === p.id);
-      const resolvedItems = items
-        .map((item) => {
-          const wl = memoryWatchlistItems.find((w) => w.id === item.watchlistId);
-          return wl ? { id: item.id, watchlist: wl } : null;
-        })
-        .filter((x): x is { id: string; watchlist: typeof memoryWatchlistItems[0] } => x !== null);
-
-      return {
-        id: p.id,
-        name: p.name,
-        description: p.description,
-        createdAt: p.createdAt,
-        items: resolvedItems,
-      };
-    });
+    const rawPortfolios = await listPortfoliosWithItems();
 
     const allTickers = new Set<string>();
     for (const port of rawPortfolios) {
@@ -124,20 +107,10 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'portfolioId and watchlistId are required' }, { status: 400 });
       }
 
-      const existing = memoryPortfolioItems.find(
-        (i) => i.portfolioId === portfolioId && i.watchlistId === watchlistId
-      );
-
-      if (existing) {
-        return NextResponse.json(existing);
+      const newItem = await addPortfolioItem({ portfolioId, watchlistId });
+      if (!newItem) {
+        return NextResponse.json({ error: 'Portfolio not found' }, { status: 404 });
       }
-
-      const newItem: MemoryPortfolioItem = {
-        id: crypto.randomUUID(),
-        portfolioId,
-        watchlistId,
-      };
-      memoryPortfolioItems.push(newItem);
       return NextResponse.json(newItem);
     }
 
@@ -148,13 +121,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Portfolio name is required' }, { status: 400 });
     }
 
-    const newPortfolio: MemoryTrendPortfolio = {
-      id: crypto.randomUUID(),
-      name: name.trim(),
-      description: description || null,
-      createdAt: new Date(),
-    };
-    memoryTrendPortfolios.push(newPortfolio);
+    const newPortfolio = await createPortfolio({ name: name.trim(), description: description || null });
     return NextResponse.json(newPortfolio);
   } catch (error: unknown) {
     console.error("Error in portfolios POST:", error);
@@ -176,13 +143,10 @@ export async function DELETE(request: NextRequest) {
         return NextResponse.json({ error: 'portfolioId and watchlistId are required' }, { status: 400 });
       }
 
-      const index = memoryPortfolioItems.findIndex(
-        (i) => i.portfolioId === portfolioId && i.watchlistId === watchlistId
-      );
-      if (index === -1) {
+      const removed = await removePortfolioItem({ portfolioId, watchlistId });
+      if (!removed) {
         return NextResponse.json({ error: 'Portfolio item connection not found' }, { status: 404 });
       }
-      memoryPortfolioItems.splice(index, 1);
       return NextResponse.json({ success: true });
     }
 
@@ -192,19 +156,9 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Portfolio ID is required' }, { status: 400 });
     }
 
-    const idx = memoryTrendPortfolios.findIndex((p) => p.id === id);
-    if (idx === -1) {
+    const deleted = await deletePortfolio(id);
+    if (!deleted) {
       return NextResponse.json({ error: 'Portfolio not found' }, { status: 404 });
-    }
-    memoryTrendPortfolios.splice(idx, 1);
-
-    const indexesToRemove = memoryPortfolioItems
-      .map((item, index) => (item.portfolioId === id ? index : -1))
-      .filter((index) => index !== -1)
-      .reverse();
-
-    for (const index of indexesToRemove) {
-      memoryPortfolioItems.splice(index, 1);
     }
 
     return NextResponse.json({ success: true });

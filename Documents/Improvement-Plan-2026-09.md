@@ -97,21 +97,21 @@ These are estimates. Phase 2 replaces them with measured numbers.
 - Switch the model string to `gemini-3.8-flash`.
 - Fix the 2 failing tests and the 4 `tsc` errors. Update the README and delete the duplicate requirements doc.
 
-**Success criteria**
-- [ ] A fake ticker (e.g., `ZZZQ`) is dropped and shows up in Validation Alerts.
-- [ ] AAPL shows a real market cap, P/E, and non-zero 1Y growth.
-- [ ] With the data keys removed, the UI shows "unavailable" instead of invented values.
-- [ ] `npx vitest run` passes 100%, and `tsc --noEmit` and `eslint` are clean.
+**Success criteria** — all verified live 2026-09-15 against real Finnhub/Yahoo data
+- [x] A fake ticker (e.g., `ZZZQ`) is dropped and shows up in Validation Alerts.
+- [x] AAPL shows a real market cap, P/E, and non-zero 1Y growth.
+- [x] With the data keys removed, the UI shows "unavailable" instead of invented values.
+- [x] `npx vitest run` passes 100%, and `tsc --noEmit` and `eslint` are clean.
 
-### Phase 1 — Real persistence (≈1 session) 🔴
+### Phase 1 — Real persistence (≈1 session) 🔴 — done 2026-09-15
 **Goal:** The watchlist and history survive restarts and Vercel deploys.
 
-- Bring back Postgres + Prisma (Neon or Vercel Postgres) for `searches`, `watchlist`, `portfolios`, `research_scans`, and the API cache. Keep the in-memory store only for tests.
-- Add a simple access gate on the API routes, such as a shared secret header or Vercel password protection.
+- [x] Postgres + Prisma 7 (driver adapters) for `searches`, `watchlist`, `portfolios`, `research_scans`, `research_loaded_theses`, and the API cache. Local dev runs Postgres via Docker Compose (`npm run db:up`); a store module per resource (`src/lib/stores/`) uses Postgres when reachable and falls back to the in-memory store automatically otherwise — not just for tests, as a resilience feature.
+- [x] Access gate: `APP_PASSWORD` env var turns on HTTP Basic Auth for the whole app (middleware), off by default so local dev has no added friction.
 
 **Success criteria**
-- [ ] A starred ticker is still on the watchlist after `npm run dev` restarts and after a redeploy.
-- [ ] Calling `/api/research` without auth returns a 401.
+- [x] Calling `/api/research` without auth returns a 401 — verified live against a running dev server (401 no creds, 401 wrong creds, 200 correct creds, page itself also gated).
+- [ ] A starred ticker is still on the watchlist after `npm run dev` restarts. **Code-complete and covered by mocked-Prisma tests, but not verified against a live Postgres** — Docker Desktop would not finish starting in this environment (its logs stopped updating mid-launch, most likely stuck on a Windows permission prompt). To finish verifying: get Docker Desktop running, then `npm run db:up && npm run db:migrate`, star a ticker, restart `npm run dev`, confirm it's still there.
 
 ### Phase 2 — AI provider layer + bake-off (≈2 sessions) 🟠
 **Goal:** Choose the engine with data instead of opinion.

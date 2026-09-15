@@ -1,0 +1,118 @@
+// Trend Discovery — persistence layer.
+//
+// Every table here has an in-memory fallback in src/lib/memoryStore.ts, used automatically
+// (via dbHelper.isDbAvailable()) when Postgres isn't configured or reachable. Keep the two
+// shapes compatible: fields the app reads from memory records should exist here too.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7: connection URLs live in prisma.config.ts (CLI) and src/lib/prisma.ts (runtime
+// driver adapter), not here — see those files for the pooled-vs-direct URL split.
+datasource db {
+  provider = "postgresql"
+}
+
+/// A saved discovery run: the theses searched, filters used, and AI trend analysis.
+model Search {
+  id            String         @id @default(uuid())
+  createdAt     DateTime       @default(now())
+  trends        String[]
+  filters       Json
+  trendAnalysis Json
+  results       SearchResult[]
+
+  @@map("searches")
+}
+
+/// One company result from a saved search snapshot.
+model SearchResult {
+  id               String   @id @default(uuid())
+  searchId         String
+  search           Search   @relation(fields: [searchId], references: [id], onDelete: Cascade)
+  ticker           String
+  companyName      String
+  rationale        String
+  trendMatched     String[]
+  financialData    Json
+  dataQuality      Json
+  compositeScore   Float?
+  convergenceScore Float?
+
+  @@index([searchId])
+  @@map("search_results")
+}
+
+/// A starred ticker. Not linked with a hard FK to portfolio items — mirrors the
+/// in-memory model, where a dangling portfolio link is simply filtered out on read.
+model WatchlistItem {
+  id             String   @id @default(uuid())
+  ticker         String   @unique
+  companyName    String
+  addedAt        DateTime @default(now())
+  priceAtAdd     Float
+  sourceSearchId String?
+  notes          String?
+  tags           String[]
+
+  @@map("watchlist_items")
+}
+
+/// A user-defined grouping of watchlist items (e.g. "AI Infrastructure Bundle").
+model TrendPortfolio {
+  id          String          @id @default(uuid())
+  name        String
+  description String?
+  createdAt   DateTime        @default(now())
+  items       PortfolioItem[]
+
+  @@map("trend_portfolios")
+}
+
+/// Links a portfolio to a watchlist item. watchlistId is intentionally not a hard FK
+/// (see WatchlistItem) so deleting a watchlist item never fails a portfolio row.
+model PortfolioItem {
+  id          String         @id @default(uuid())
+  portfolioId String
+  portfolio   TrendPortfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  watchlistId String
+
+  @@unique([portfolioId, watchlistId])
+  @@map("portfolio_items")
+}
+
+/// A cached Research tab scan (guided domains or an open prompt).
+model ResearchScan {
+  id           String   @id @default(uuid())
+  createdAt    DateTime @default(now())
+  domains      String[]
+  customPrompt String?
+  report       Json
+  cachedUntil  DateTime
+
+  @@map("research_scans")
+}
+
+/// Audit log: which candidate theses the user loaded into Discovery, and when.
+model ResearchLoadedThesis {
+  id       String   @id @default(uuid())
+  scanId   String
+  thesis   String
+  loadedAt DateTime @default(now())
+  searchId String?
+
+  @@map("research_loaded_theses")
+}
+
+/// General-purpose TTL cache for AI responses and market data (replaces the
+/// in-memory-only cache from dbHelper.ts so cached data survives restarts).
+model CacheEntry {
+  key       String   @id
+  type      String
+  data      Json
+  expiresAt DateTime
+
+  @@index([expiresAt])
+  @@map("cache_entries")
+}

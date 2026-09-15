@@ -6,6 +6,7 @@ import { memoryResearchScans, memoryResearchLoadedTheses } from '../lib/memorySt
 import * as geminiService from '../lib/geminiService';
 
 vi.mock('../lib/dbHelper', () => ({
+  isDbAvailable: vi.fn().mockResolvedValue(false),
   getCachedData: vi.fn().mockResolvedValue(null),
   setCachedData: vi.fn(),
 }));

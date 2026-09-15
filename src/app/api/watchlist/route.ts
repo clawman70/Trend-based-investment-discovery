@@ -1,16 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import crypto from 'crypto';
-import {
-  memoryWatchlistItems,
-  MemoryWatchlistItem,
-} from '@/lib/memoryStore';
+import { deleteWatchlistItem, listWatchlistItems, updateWatchlistItem, upsertWatchlistItem } from '@/lib/stores/watchlistStore';
 import { fetchQuotes, isFinnhubConfigured } from '@/lib/finnhubService';
 
 export async function GET() {
   try {
-    const items = [...memoryWatchlistItems].sort(
-      (a, b) => b.addedAt.getTime() - a.addedAt.getTime()
-    );
+    const items = await listWatchlistItems();
 
     if (items.length === 0) {
       return NextResponse.json([]);
@@ -67,26 +61,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Ticker and Company Name are required' }, { status: 400 });
     }
 
-    const upperTicker = ticker.trim().toUpperCase();
-
-    // Memory write
-    const existingIdx = memoryWatchlistItems.findIndex((item) => item.ticker === upperTicker);
-    const newItem: MemoryWatchlistItem = {
-      id: existingIdx !== -1 ? memoryWatchlistItems[existingIdx].id : crypto.randomUUID(),
-      ticker: upperTicker,
+    const newItem = await upsertWatchlistItem({
+      ticker: ticker.trim().toUpperCase(),
       companyName,
-      addedAt: existingIdx !== -1 ? memoryWatchlistItems[existingIdx].addedAt : new Date(),
       priceAtAdd,
       sourceSearchId: sourceSearchId || null,
       notes: notes || null,
       tags: tags || [],
-    };
-
-    if (existingIdx !== -1) {
-      memoryWatchlistItems[existingIdx] = newItem;
-    } else {
-      memoryWatchlistItems.push(newItem);
-    }
+    });
 
     return NextResponse.json(newItem);
   } catch (error: unknown) {
@@ -109,15 +91,12 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Watchlist Item ID is required' }, { status: 400 });
     }
 
-    const existing = memoryWatchlistItems.find((item) => item.id === id);
-    if (!existing) {
+    const updated = await updateWatchlistItem(id, { notes, tags });
+    if (!updated) {
       return NextResponse.json({ error: 'Watchlist Item not found' }, { status: 404 });
     }
 
-    if (notes !== undefined) existing.notes = notes;
-    if (tags !== undefined) existing.tags = tags;
-
-    return NextResponse.json(existing);
+    return NextResponse.json(updated);
   } catch (error: unknown) {
     console.error("Error in watchlist PUT:", error);
     const errorMessage = error instanceof Error ? error.message : 'Internal Server Error';
@@ -135,15 +114,11 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Watchlist ID or Ticker is required' }, { status: 400 });
     }
 
-    const index = id
-      ? memoryWatchlistItems.findIndex((item) => item.id === id)
-      : memoryWatchlistItems.findIndex((item) => item.ticker === ticker?.toUpperCase());
-
-    if (index === -1) {
+    const deleted = await deleteWatchlistItem({ id: id ?? undefined, ticker: ticker ? ticker.toUpperCase() : undefined });
+    if (!deleted) {
       return NextResponse.json({ error: 'Watchlist Item not found' }, { status: 404 });
     }
 
-    memoryWatchlistItems.splice(index, 1);
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
     console.error("Error in watchlist DELETE:", error);
