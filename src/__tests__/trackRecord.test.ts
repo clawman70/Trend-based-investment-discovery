@@ -172,6 +172,15 @@ describe('Track record math (Phase D)', () => {
     it('matching SPY exactly is not a hit', () => {
       expect(evaluatePick(pick(), 105, 1, 5).beatBenchmark).toBe(false);
     });
+
+    it('rounding noise between data sources is a tie, not a hit (seen live on a same-day search)', () => {
+      // SPY -0.0000003% (Yahoo 732.4400024 vs Finnhub 732.44), pick flat at 0%
+      const out = evaluatePick(pick(), 100, 1, -3.333e-7);
+      expect(out.beatBenchmark).toBe(false);
+      expect(summarize([{ pickReturn: 0, benchmarkReturn: -3.333e-7, days: 0 }]).hitRate).toBe(0);
+      // A real 0.02-point edge still counts
+      expect(evaluatePick(pick(), 100.02, 1, 0).beatBenchmark).toBe(true);
+    });
   });
 
   describe('Figures and the "too early to read" label', () => {

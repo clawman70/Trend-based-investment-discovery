@@ -34,6 +34,12 @@ const CLOSE_FINAL_MINUTES = 16 * 60 + 30;
  * trading close. 7 tolerates a short data gap but rejects stale data.
  */
 export const MAX_CLOSE_GAP_DAYS = 7;
+/**
+ * A pick must beat SPY by more than this many percentage points to count as a hit. Smaller
+ * gaps are ties: rounding noise between data sources, not outperformance (found live: a
+ * same-day search showed a "100% hit rate" from a 0.0000003-point difference).
+ */
+export const HIT_MARGIN_PTS = 0.01;
 
 export interface DailyClose {
   date: Date;
@@ -230,7 +236,7 @@ export function evaluatePick(
     pickReturn,
     benchmarkReturn,
     excessReturn: excess,
-    beatBenchmark: excess === null ? null : excess > 0,
+    beatBenchmark: excess === null ? null : excess > HIT_MARGIN_PTS,
   };
 }
 
@@ -288,7 +294,7 @@ export function summarize(rows: FigureRow[]): Figure {
     avgPickReturn: mean(rows.map((r) => r.pickReturn)),
     avgBenchmarkReturn: mean(withBenchmark.map((r) => r.benchmarkReturn)),
     avgExcessReturn: mean(excess),
-    hitRate: excess.length ? excess.filter((e) => e > 0).length / excess.length : null,
+    hitRate: excess.length ? excess.filter((e) => e > HIT_MARGIN_PTS).length / excess.length : null,
     tooEarly: reasons.length > 0,
     tooEarlyReason: reasons.length ? reasons.join('; ') : null,
   };

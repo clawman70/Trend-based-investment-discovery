@@ -205,7 +205,9 @@ export async function fetchDailyCloses(symbol: string, from: Date, to: Date = ne
     const result = await yahooFinance.chart(toYahooSymbol(symbol), { period1: from, period2: to, interval: '1d' });
     return result.quotes
       .filter((q) => typeof q.close === 'number' && q.close > 0)
-      .map((q) => ({ date: q.date, close: q.close as number }));
+      // Yahoo sends single-precision floats (732.44 arrives as 732.4400024414062). Rounding
+      // to 4 decimals restores the quoted price, so it matches Finnhub's 732.44 exactly.
+      .map((q) => ({ date: q.date, close: Math.round((q.close as number) * 10_000) / 10_000 }));
   } catch (error) {
     console.warn(`[Yahoo] Daily closes failed for ${symbol}:`, error instanceof Error ? error.message : error);
     return null;
