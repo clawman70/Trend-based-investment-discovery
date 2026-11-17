@@ -27,8 +27,18 @@ A Bloomberg-style research terminal. You describe a market trend in plain Englis
 | 1Y / 5Y price growth | Yahoo Finance weekly price history | Falls back to Finnhub 52-week return for 1Y |
 | News | Finnhub `/company-news` (last 14 days) | |
 | Peers | Finnhub `/stock/peers` | Up to 8 peers |
-| Market-cap filter enforcement | Real Finnhub market cap, checked after enrichment | The AI only sees your market-cap filter as a text hint; a company whose *real* market cap doesn't match your selected tier is dropped after enrichment, not trusted from the model's guess. A company with unknown market cap is kept (can't verify, so it isn't filtered out). See `src/lib/marketCapFilter.ts`. |
-| "6M Rally >30%" on Research-tab companies | Computed from real Finnhub price + Yahoo 6-month history | Used to be an AI guess. Now: real, or **N/A** when the ticker isn't a real quotable US security (private companies, foreign tickers) — never guessed. See `fetchSixMonthRally` in `src/lib/yahooService.ts`. |
+| Market-cap and exchange filter enforcement | Real Finnhub market cap and real listing exchange, checked after enrichment | The AI only sees your market-cap and exchange filters as text hints. After enrichment, a company whose *real* market cap doesn't match your selected tier, or whose *real* listing exchange isn't one you selected, is dropped. Exchange matching is exact: "NYSE" means NYSE only, not NYSE American or NYSE Arca. A company whose market cap or exchange is unknown is kept (can't verify, so it isn't filtered out). See `src/lib/resultFilters.ts`. |
+| Research-tab ticker check | Finnhub symbol directory (same one the Discovery gate uses) | Every company Gemini names is checked before its ticker is used. If the ticker isn't a listed US security, or it belongs to a company with a clearly different name, the row is marked **UNVERIFIED** with the reason, and it gets no rally value. See `src/lib/researchVerification.ts`. |
+| Research-tab market-cap tier | Real Finnhub market cap for verified tickers | Recomputed from real data (same micro/small/mid/large cutoffs as Discovery). When Finnhub has no market cap, or the ticker is unverified, the tier is Gemini's guess and is labeled **AI estimate** under the badge. |
+| "6M Rally >30%" on Research-tab companies | Computed from real Finnhub price + Yahoo 6-month history | Never an AI guess. Only computed for **verified** tickers; **N/A** for unverified tickers or when price history is unavailable. See `fetchSixMonthRally` in `src/lib/yahooService.ts`. |
+
+**Research report validation:** Gemini's structured report is checked with a schema (`src/lib/researchSchema.ts`) instead of being trusted. A label outside the allowed list (maturity, confidence, convergence type, source type, market-cap tier) is shown as "unknown" rather than breaking the page. If the report itself is broken (not valid JSON, no summary, no list of theses, a thesis with no statement), the scan fails with a clear "Research scan failed" message instead of showing a partial report.
+
+**Multi-thesis runs:** if discovery fails for one thesis while others succeed, a red warning above the results names the failed thesis. The results come from the theses that ran, and "matches N of M" counts only those. If every thesis fails, the run stops with an error.
+
+**Watchlist:**
+- Starring a company saves why it was picked as the note. With several theses, each reason is labeled with its thesis.
+- The cost basis is the price on the day you starred it. If the price didn't load in the browser, the server fetches a live quote. If that also fails, the cost basis is saved as **N/A**, not $0, and gain/loss shows N/A. Portfolio totals leave those items out.
 
 **Finnhub free-tier budget:** 60 calls/minute. All Finnhub calls share one rate limiter (capped at 55/min), so a big discovery run (25+ companies) may pause briefly instead of failing.
 
@@ -66,6 +76,8 @@ Without a database the app still runs — the watchlist, portfolios, history and
 npm run db:up       # starts Postgres via Docker Compose (Docker Desktop must be running)
 npm run db:migrate   # creates the tables
 ```
+
+Run `npm run db:migrate` again after pulling changes that add a migration. The November 2026 fixes added one: it makes the watchlist cost basis optional and turns any stored $0 cost basis into N/A.
 
 `.env.example` already has the matching `POSTGRES_PRISMA_URL` / `POSTGRES_URL_NON_POOLING` for this local database — copy them into `.env.local` if you haven't already. **Docker Compose is local-dev only — it doesn't exist on Vercel.** For a production deploy, point those two variables at a real hosted Postgres instance (Vercel Postgres or [Neon](https://neon.tech) both work) and run `npm run db:deploy` once instead.
 
@@ -133,7 +145,10 @@ The tests mock every external API and the database, so they run offline and cost
 │       ├── finnhubService.ts          # Rate-limited Finnhub client + metric normalization
 │       ├── yahooService.ts            # Yahoo price history + company profile
 │       ├── tickerValidator.ts         # Hallucination gate (Finnhub symbol directory)
-│       ├── marketCapFilter.ts         # Real market-cap enforcement (post-enrichment)
+│       ├── resultFilters.ts           # Real market-cap + exchange enforcement (post-enrichment)
+│       ├── rationale.ts               # Builds the watchlist/history note from per-thesis rationales
+│       ├── researchSchema.ts          # Validates Gemini's Research report JSON (unknown labels -> "unknown")
+│       ├── researchVerification.ts    # Research-tab ticker check, real market-cap tier, rally check
 │       ├── claudeService.ts           # Claude: discovery, trend analysis, sentiment, value-chain
 │       ├── geminiService.ts           # Gemini: Research tab only, Google Search grounding
 │       ├── usageTracker.ts            # Daily AI spend estimate + cap check (DAILY_SPEND_CAP_USD)
