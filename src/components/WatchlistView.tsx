@@ -5,7 +5,7 @@ interface WatchlistItem {
   ticker: string;
   companyName: string;
   addedAt: string;
-  priceAtAdd: number;
+  priceAtAdd: number | null; // null = no real price when starred -> N/A
   currentPrice: number | null; // null = live price unavailable
   gainLossPercent: number | null;
   notes: string | null;
@@ -246,7 +246,9 @@ export const WatchlistView: React.FC<WatchlistViewProps> = ({ isActive, onInspec
 
                     {/* Cost Basis */}
                     <td className="px-4 py-4 whitespace-nowrap font-mono text-zinc-300">
-                      ${item.priceAtAdd.toFixed(2)}
+                      {item.priceAtAdd !== null && item.priceAtAdd > 0 ? `$${item.priceAtAdd.toFixed(2)}` : (
+                        <span className="text-zinc-600 italic">N/A</span>
+                      )}
                     </td>
 
                     {/* Current Price */}

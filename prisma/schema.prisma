@@ -51,7 +51,9 @@ model WatchlistItem {
   ticker         String   @unique
   companyName    String
   addedAt        DateTime @default(now())
-  priceAtAdd     Float
+  /// Price when starred (cost basis). Null = no real price was available then, so
+  /// gain/loss shows N/A. Never 0 (bug B8: 0 used to be stored and blanked gain/loss forever).
+  priceAtAdd     Float?
   sourceSearchId String?
   notes          String?
   tags           String[]

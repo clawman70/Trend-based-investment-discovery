@@ -22,6 +22,7 @@ vi.mock('../lib/dbHelper', () => ({
 vi.mock('../lib/finnhubService', () => ({
   isFinnhubConfigured: vi.fn(() => true),
   fetchQuotes: vi.fn(),
+  fetchQuote: vi.fn(),
 }));
 
 const quotes = (prices: Record<string, number>) =>
@@ -166,6 +167,58 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       const deleteResponse = await watchlistDELETE(deleteRequest);
       expect(deleteResponse.status).toBe(200);
       expect(memoryWatchlistItems.length).toBe(0);
+    });
+  });
+
+  describe('Watchlist cost basis when the price is missing (bug B8)', () => {
+    const star = (body: object) =>
+      watchlistPOST(new NextRequest('http://localhost:3000/api/watchlist', { method: 'POST', body: JSON.stringify(body) }));
+
+    it('fetches a live quote server-side when the browser sends no price (or 0)', async () => {
+      vi.mocked(finnhubService.fetchQuote).mockResolvedValue({ c: 42.5 } as FinnhubQuote);
+      await star({ ticker: 'aapl', companyName: 'Apple Inc.', priceAtAdd: 0 });
+      expect(finnhubService.fetchQuote).toHaveBeenCalledWith('AAPL');
+      expect(memoryWatchlistItems[0].priceAtAdd).toBe(42.5);
+
+      await star({ ticker: 'MSFT', companyName: 'Microsoft Corp.', priceAtAdd: null });
+      expect(memoryWatchlistItems.find((i) => i.ticker === 'MSFT')?.priceAtAdd).toBe(42.5);
+    });
+
+    it('does not call Finnhub when the browser already sent a real price', async () => {
+      vi.mocked(finnhubService.fetchQuote).mockClear();
+      await star({ ticker: 'AAPL', companyName: 'Apple Inc.', priceAtAdd: 100 });
+      expect(finnhubService.fetchQuote).not.toHaveBeenCalled();
+      expect(memoryWatchlistItems[0].priceAtAdd).toBe(100);
+    });
+
+    it('stores null (never 0) when the quote also fails, and gain/loss shows as N/A', async () => {
+      vi.mocked(finnhubService.fetchQuote).mockRejectedValue(new Error('Finnhub down'));
+      const res = await star({ ticker: 'AAPL', companyName: 'Apple Inc.' });
+      expect(res.status).toBe(200);
+      expect(memoryWatchlistItems[0].priceAtAdd).toBeNull();
+
+      vi.mocked(finnhubService.fetchQuotes).mockResolvedValue(quotes({ AAPL: 180 }));
+      const list = await (await watchlistGET()).json();
+      expect(list[0].priceAtAdd).toBeNull();
+      expect(list[0].currentPrice).toBe(180);
+      expect(list[0].gainLossPercent).toBeNull();
+    });
+
+    it('a null cost basis is N/A in a portfolio and left out of its totals', async () => {
+      memoryWatchlistItems.push(
+        { id: 'wl-a', ticker: 'AAPL', companyName: 'Apple Inc.', addedAt: new Date(), priceAtAdd: null, sourceSearchId: null, notes: null, tags: [] },
+        { id: 'wl-m', ticker: 'MSFT', companyName: 'Microsoft Corp.', addedAt: new Date(), priceAtAdd: 100, sourceSearchId: null, notes: null, tags: [] }
+      );
+      memoryTrendPortfolios.push({ id: 'p1', name: 'Test', description: null, createdAt: new Date() });
+      memoryPortfolioItems.push({ id: 'pi1', portfolioId: 'p1', watchlistId: 'wl-a' }, { id: 'pi2', portfolioId: 'p1', watchlistId: 'wl-m' });
+      vi.mocked(finnhubService.fetchQuotes).mockResolvedValue(quotes({ AAPL: 180, MSFT: 150 }));
+
+      const [portfolio] = await (await portfoliosGET()).json();
+      const aapl = portfolio.items.find((i: { ticker: string }) => i.ticker === 'AAPL');
+      expect(aapl.priceAtAdd).toBeNull();
+      expect(aapl.gainLossPercent).toBeNull();
+      // Only MSFT counts: (150 - 100) / 100 = +50%
+      expect(portfolio.gainLossPercent).toBeCloseTo(50);
     });
   });
 

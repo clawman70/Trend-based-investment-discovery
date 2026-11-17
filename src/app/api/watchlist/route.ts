@@ -1,6 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { deleteWatchlistItem, listWatchlistItems, updateWatchlistItem, upsertWatchlistItem } from '@/lib/stores/watchlistStore';
-import { fetchQuotes, isFinnhubConfigured } from '@/lib/finnhubService';
+import { fetchQuote, fetchQuotes, isFinnhubConfigured } from '@/lib/finnhubService';
+
+/**
+ * Cost basis for a newly starred ticker (bug B8). Uses the browser's price when it's a
+ * real positive number. Otherwise fetches a live quote here. If that also fails, returns
+ * null — stored as "no cost basis" and shown as N/A, never 0 (0 used to blank the
+ * gain/loss forever).
+ */
+async function resolveCostBasis(ticker: string, clientPrice: unknown): Promise<number | null> {
+  if (typeof clientPrice === 'number' && Number.isFinite(clientPrice) && clientPrice > 0) {
+    return clientPrice;
+  }
+  if (!isFinnhubConfigured()) return null;
+  try {
+    const quote = await fetchQuote(ticker);
+    return quote && quote.c > 0 ? quote.c : null;
+  } catch (err) {
+    console.warn(`[Watchlist] Could not fetch a price for ${ticker}; cost basis stored as N/A:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
 
 export async function GET() {
   try {
@@ -26,7 +46,7 @@ export async function GET() {
     // Assemble watchlist results with gain/loss % calculations
     const enrichedWatchlist = items.map((item) => {
       const currentPrice = priceMap.get(item.ticker.toUpperCase()) ?? null;
-      const gainLossPercent = currentPrice !== null && item.priceAtAdd > 0
+      const gainLossPercent = currentPrice !== null && item.priceAtAdd !== null && item.priceAtAdd > 0
         ? ((currentPrice - item.priceAtAdd) / item.priceAtAdd) * 100
         : null;
 
@@ -51,7 +71,7 @@ export async function POST(request: NextRequest) {
     const { ticker, companyName, priceAtAdd, sourceSearchId, notes, tags } = body as {
       ticker: string;
       companyName: string;
-      priceAtAdd: number;
+      priceAtAdd?: number | null; // optional: missing/0 triggers a server-side quote
       sourceSearchId?: string;
       notes?: string;
       tags?: string[];
@@ -61,10 +81,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Ticker and Company Name are required' }, { status: 400 });
     }
 
+    const cleanTicker = ticker.trim().toUpperCase();
     const newItem = await upsertWatchlistItem({
-      ticker: ticker.trim().toUpperCase(),
+      ticker: cleanTicker,
       companyName,
-      priceAtAdd,
+      priceAtAdd: await resolveCostBasis(cleanTicker, priceAtAdd),
       sourceSearchId: sourceSearchId || null,
       notes: notes || null,
       tags: tags || [],

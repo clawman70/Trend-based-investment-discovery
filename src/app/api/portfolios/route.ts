@@ -43,12 +43,14 @@ export async function GET() {
       const itemsList = port.items.map((item) => {
         const wl = item.watchlist;
         const currentPrice = priceMap.get(wl.ticker.toUpperCase()) ?? null;
-        const gainLossPercent = currentPrice !== null && wl.priceAtAdd > 0
-          ? ((currentPrice - wl.priceAtAdd) / wl.priceAtAdd) * 100
+        // Cost basis can be null (no real price when starred) — then gain/loss is N/A
+        const costBasis = wl.priceAtAdd !== null && wl.priceAtAdd > 0 ? wl.priceAtAdd : null;
+        const gainLossPercent = currentPrice !== null && costBasis !== null
+          ? ((currentPrice - costBasis) / costBasis) * 100
           : null;
 
-        if (currentPrice !== null && wl.priceAtAdd > 0) {
-          totalCostBasis += wl.priceAtAdd;
+        if (currentPrice !== null && costBasis !== null) {
+          totalCostBasis += costBasis;
           totalCurrentValue += currentPrice;
         } else {
           unpricedCount += 1;

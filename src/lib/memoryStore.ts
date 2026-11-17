@@ -24,7 +24,7 @@ export interface MemoryWatchlistItem {
   ticker: string;
   companyName: string;
   addedAt: Date;
-  priceAtAdd: number;
+  priceAtAdd: number | null; // cost basis; null = no real price when starred (shown as N/A)
   sourceSearchId: string | null;
   notes: string | null;
   tags: string[];

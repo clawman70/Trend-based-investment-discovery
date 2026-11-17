@@ -4,7 +4,7 @@ interface PortfolioItem {
   id: string;
   ticker: string;
   companyName: string;
-  priceAtAdd: number;
+  priceAtAdd: number | null; // null = no real price when starred -> N/A
   currentPrice: number | null; // null = live price unavailable
   gainLossPercent: number | null;
   notes: string | null;
@@ -366,7 +366,11 @@ export const PortfoliosView: React.FC<PortfoliosViewProps> = ({ isActive, onInsp
                                     </div>
                                   </td>
                                   <td className="px-3 py-2 text-zinc-300">{item.companyName}</td>
-                                  <td className="px-3 py-2 text-zinc-400">${item.priceAtAdd.toFixed(2)}</td>
+                                  <td className="px-3 py-2 text-zinc-400">
+                                    {item.priceAtAdd !== null && item.priceAtAdd > 0 ? `$${item.priceAtAdd.toFixed(2)}` : (
+                                      <span className="text-zinc-600 italic">N/A</span>
+                                    )}
+                                  </td>
                                   <td className="px-3 py-2 text-zinc-300">
                                     {item.currentPrice !== null ? `$${item.currentPrice.toFixed(2)}` : (
                                       <span className="text-zinc-600 italic">N/A</span>

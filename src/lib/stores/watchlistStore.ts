@@ -21,7 +21,7 @@ export async function listWatchlistItems(): Promise<MemoryWatchlistItem[]> {
 export async function upsertWatchlistItem(input: {
   ticker: string;
   companyName: string;
-  priceAtAdd: number;
+  priceAtAdd: number | null; // null = no real price available; never store 0 (bug B8)
   sourceSearchId?: string | null;
   notes?: string | null;
   tags?: string[];
