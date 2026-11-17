@@ -1,0 +1,46 @@
+# Continuous integration: runs the same offline checks you'd run locally
+# (tests, type check, lint) on every push and pull request.
+#
+# No secrets are needed. The tests mock every external API (Claude, Gemini,
+# Finnhub, Yahoo) and the database, so nothing here calls a paid service.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # `npm ci` runs `prisma generate` (postinstall), which reads prisma.config.ts.
+      # Generating the client never connects to a database, but the config expects a
+      # URL to be present, so give it a harmless placeholder. Not a real secret.
+      POSTGRES_PRISMA_URL: postgresql://ci:ci@localhost:5432/ci
+      POSTGRES_URL_NON_POOLING: postgresql://ci:ci@localhost:5432/ci
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      # Node 22+ is required by yahoo-finance2 v4 (see README "Setup").
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests (vitest)
+        run: npx vitest run
+
+      - name: Type check (tsc)
+        run: npx tsc --noEmit
+
+      - name: Lint (eslint)
+        run: npm run lint

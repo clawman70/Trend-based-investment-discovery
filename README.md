@@ -97,7 +97,13 @@ npx tsc --noEmit
 npm run lint
 ```
 
+```bash
+npm run build
+```
+
 The tests mock every external API and the database, so they run offline and cost nothing.
+
+**CI:** `.github/workflows/ci.yml` runs the tests, type check and lint on GitHub for every push and pull request (Node 22, no secrets needed). It does not run the production build.
 
 ---
 
@@ -120,8 +126,7 @@ The tests mock every external API and the database, so they run offline and cost
 │   │   │   ├── peers/                 # Finnhub peer comparison
 │   │   │   ├── research/              # Gemini research scans (Google Search grounding)
 │   │   │   ├── usage/today/           # Today's estimated AI spend + daily cap status
-│   │   │   ├── validate-ticker/       # Ticker validation endpoint
-│   │   │   └── watchlist/ portfolios/ history/ score/   # Saved items + composite scoring
+│   │   │   └── watchlist/ portfolios/ history/   # Saved items (Postgres, falls back to memory)
 │   │   └── page.tsx                   # Main dashboard
 │   ├── components/                    # UI (ResultsTable, DetailsModal, ValidationAlerts, SpendCapBanner, ...)
 │   └── lib/
@@ -133,21 +138,21 @@ The tests mock every external API and the database, so they run offline and cost
 │       ├── geminiService.ts           # Gemini: Research tab only, Google Search grounding
 │       ├── usageTracker.ts            # Daily AI spend estimate + cap check (DAILY_SPEND_CAP_USD)
 │       ├── demoData.ts                # DEMO_MODE placeholder fixtures (labeled)
-│       ├── scoring.ts                 # Composite score
+│       ├── scoring.ts                 # Composite score (runs in the browser; no score API)
 │       ├── prisma.ts                  # Prisma client (Postgres, driver adapter)
 │       ├── dbHelper.ts                # isDbAvailable() + TTL cache (Postgres, falls back to memory)
 │       ├── memoryStore.ts             # In-memory fallback storage
 │       ├── stores/                    # One module per resource: Postgres if available, else memory
 │       │   ├── historyStore.ts / watchlistStore.ts / portfolioStore.ts / researchStore.ts
 │       └── types.ts
-└── v1_backup/                         # Original v1 code
+└── .github/workflows/ci.yml           # CI: runs tests, type check and lint on every push / PR
 ```
 
 ---
 
 ## Known Limitations
 
-See `Documents/Improvement-Plan-2026-09.md` for the full roadmap.
+See `Documents/Improvement-Plan-2026-11.md` for the current roadmap (`Improvement-Plan-2026-09.md` is the record of the earlier phases).
 
 - **The app password gate is a deterrent, not compliance-grade auth.** No rate limiting, no audit log, no per-user accounts — fine for a personal tool, not for anything handling other people's data.
 - **Portfolio→watchlist links have a real foreign key on the portfolio side only.** Deleting a watchlist item that's linked to a portfolio never fails, it just quietly drops from that portfolio's view — same behavior with or without Postgres.
