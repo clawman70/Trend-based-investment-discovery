@@ -1,5 +1,16 @@
 # Trend-Based Investment Discovery Engine — v2.0 Requirements
 
+> **Historical document — this is the original v2 spec, kept as a record of intent.**
+> It is not a description of the app as it works today. For current behavior, setup and data sources, read the [README](../README.md).
+>
+> What has changed since this spec was written:
+> - **Financial data:** FMP was replaced by **Finnhub** (free tier) for ticker validation, prices and fundamentals, with Yahoo Finance (`yahoo-finance2`) for price history and company profiles.
+> - **AI models:** Gemini-only became **Claude plus Gemini**. Claude handles discovery, trend analysis, news sentiment and value-chain summaries; Gemini handles only the Research tab (Google Search grounding). Model defaults have also moved past Gemini 2.5 Flash.
+> - **Auth:** "None" no longer holds. An optional password gate (`APP_PASSWORD`) now covers the whole app, API included.
+> - **Docker:** "No Docker" no longer holds. Local Postgres runs in **Docker Compose** (`npm run db:up`); without it the app falls back to in-memory storage.
+> - **Removed endpoints:** `/api/validate-ticker` and `/api/score` were built and later deleted (November 2026) because nothing in the UI called them. Ticker validation happens inside `/api/discover`; scoring happens in the browser (`src/lib/scoring.ts`).
+> - **Growth factor:** the 20% growth factor in the scoring section was never built. It is planned in `Improvement-Plan-2026-11.md` (Phase C).
+
 ## Project Overview
 
 **What it is:** A tool that lets an investor describe emerging market trends in natural language, discovers publicly traded companies aligned with those trends, enriches them with real financial data, and scores/ranks them for investment potential.
