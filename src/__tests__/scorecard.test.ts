@@ -2,14 +2,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import crypto from 'crypto';
 import type { FinnhubQuote } from '../lib/finnhubService';
 
-// In-memory stand-in for the Postgres cache, so caching behavior is observable
-const { cache } = vi.hoisted(() => ({ cache: new Map<string, unknown>() }));
+// In-memory stand-in for the Postgres cache, honoring expiry like the real one, so caching
+// behavior (including what's still cached a day later) is observable
+const { cache } = vi.hoisted(() => ({ cache: new Map<string, { data: unknown; expiresAt: number }>() }));
 
 vi.mock('../lib/dbHelper', () => ({
   isDbAvailable: vi.fn().mockResolvedValue(false),
-  getCachedData: vi.fn(async (key: string) => cache.get(key) ?? null),
-  setCachedData: vi.fn(async (key: string, _type: string, data: unknown) => {
-    cache.set(key, data);
+  getCachedData: vi.fn(async (key: string) => {
+    const entry = cache.get(key);
+    return entry && entry.expiresAt > Date.now() ? entry.data : null;
+  }),
+  setCachedData: vi.fn(async (key: string, _type: string, data: unknown, ttlMs: number) => {
+    cache.set(key, { data, expiresAt: Date.now() + ttlMs });
   }),
 }));
 
@@ -168,6 +172,42 @@ describe('GET /api/scorecard (Phase D)', () => {
     expect(bbb.startPrice).toBeCloseTo(500);
     expect(bbb.pickReturn).toBeCloseTo(-92);
     expect(sept.splitAdjusted).toBe(1);
+  });
+
+  describe('split list vs quote timing (review finding: fake -90% after a split)', () => {
+    const SPLIT_DAY = new Date('2026-11-17T14:30:00Z'); // BBB 10-for-1, ex-date Tue 11-17 at the open
+    const bbbReturn = (data: { searches: { searchId: string; picks: { ticker: string; pickReturn: number | null }[] }[] }) =>
+      data.searches.find((s) => s.searchId === 'sept')!.picks.find((p) => p.ticker === 'BBB')!.pickReturn;
+    const quotesAt = (bbb: number, tradeTime: string) => async (symbol: string) => {
+      const t = Date.parse(tradeTime) / 1000;
+      if (symbol === 'BBB') return { c: bbb, t } as FinnhubQuote;
+      return QUOTES[symbol] ? ({ c: QUOTES[symbol], t } as FinnhubQuote) : null;
+    };
+
+    it('a split list cached the day before cannot be paired with a post-split quote', async () => {
+      // Mon 11-16, 15:00 ET: no split yet; the (empty) split list gets cached for 24h
+      vi.setSystemTime(new Date('2026-11-16T20:00:00Z'));
+      vi.mocked(finnhubService.fetchQuote).mockImplementation(quotesAt(50, '2026-11-16T20:00:00Z'));
+      vi.mocked(yahooService.fetchSplitEvents).mockResolvedValue([]);
+      expect(bbbReturn(await load())).toBeCloseTo(0);
+
+      // Tue 11-17, 11:00 ET (20 hours later, split cache still live; quote cache long expired):
+      // BBB split 10-for-1 at today's open and trades at $5
+      vi.setSystemTime(new Date('2026-11-17T16:00:00Z'));
+      vi.mocked(finnhubService.fetchQuote).mockImplementation(quotesAt(5, '2026-11-17T15:59:00Z'));
+      vi.mocked(yahooService.fetchSplitEvents).mockResolvedValue([{ date: SPLIT_DAY, numerator: 10, denominator: 1 }]);
+      // $50 then = $5 in today's shares: flat, not -90%
+      expect(bbbReturn(await load())).toBeCloseTo(0);
+    });
+
+    it('a pre-open quote (still the pre-split price) is not adjusted for a split that starts today', async () => {
+      // Tue 11-17, 09:00 ET: the quote is Monday's close, $50, before the split takes effect
+      vi.setSystemTime(new Date('2026-11-17T14:00:00Z'));
+      vi.mocked(finnhubService.fetchQuote).mockImplementation(quotesAt(50, '2026-11-16T21:00:00Z'));
+      vi.mocked(yahooService.fetchSplitEvents).mockResolvedValue([{ date: SPLIT_DAY, numerator: 10, denominator: 1 }]);
+      // Not +900%
+      expect(bbbReturn(await load())).toBeCloseTo(0);
+    });
   });
 
   it('without a Finnhub key no quotes are fetched and every pick is excluded as unpriced', async () => {

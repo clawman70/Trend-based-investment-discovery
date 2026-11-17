@@ -244,9 +244,10 @@ const SearchCard: React.FC<{ card: SearchScorecard; minDays: number }> = ({ card
       {open && (
         <>
           <HalvesStats top={card.topHalf} bottom={card.bottomHalf} benchmark={benchmark.ticker} />
-          {(card.middleLeftOut > 0 || card.unscored > 0) && (
+          {(card.leftOutAtBoundary > 0 || card.unscored > 0) && (
             <p className="text-[10px] font-mono text-zinc-600">
-              {card.middleLeftOut > 0 && 'Odd number of picks: the middle-scored pick is left out of both halves. '}
+              {card.leftOutAtBoundary > 0 &&
+                `${plural(card.leftOutAtBoundary, 'pick')} at the middle score (the odd middle pick, or picks tied across the dividing line) ${card.leftOutAtBoundary === 1 ? 'is' : 'are'} left out of both halves. `}
               {card.unscored > 0 && `${plural(card.unscored, 'pick')} had no saved score and ${card.unscored === 1 ? 'is' : 'are'} left out of the halves.`}
             </p>
           )}
@@ -375,6 +376,12 @@ export const ScorecardView: React.FC<ScorecardViewProps> = ({ isActive }) => {
                     Does the score predict anything? Top-scored half vs bottom-scored half (split within each search)
                   </h4>
                   <HalvesStats top={overall.topHalf} bottom={overall.bottomHalf} benchmark={bench} />
+                  {overall.leftOutAtBoundary > 0 && (
+                    <p className="text-[10px] font-mono text-zinc-600 mt-2">
+                      {plural(overall.leftOutAtBoundary, 'pick')} at a search&apos;s middle score (odd middle pick or tied across the
+                      dividing line) {overall.leftOutAtBoundary === 1 ? 'is' : 'are'} left out of both halves.
+                    </p>
+                  )}
                 </div>
               </>
             )}

@@ -14,7 +14,7 @@
  */
 import { NextResponse } from 'next/server';
 import { listSearchesWithPicks } from '@/lib/stores/historyStore';
-import { getBenchmarkStartCloses, getCurrentPrices, getSplitFactors } from '@/lib/benchmark';
+import { CurrentPrice, getBenchmarkStartCloses, getCurrentPrices, getSplitFactors } from '@/lib/benchmark';
 import { isFinnhubConfigured } from '@/lib/finnhubService';
 import {
   BENCHMARK_TICKER,
@@ -36,7 +36,9 @@ export async function GET() {
     // 1. Current prices: only picks that have a saved start price need one, plus SPY
     const tickers = new Set<string>([BENCHMARK_TICKER]);
     for (const s of searches) for (const p of s.picks) if (p.priceAtSearch !== null) tickers.add(p.ticker);
-    const prices = finnhubConfigured && searches.length > 0 ? await getCurrentPrices(Array.from(tickers)) : new Map<string, number>();
+    const quotes =
+      finnhubConfigured && searches.length > 0 ? await getCurrentPrices(Array.from(tickers), now) : new Map<string, CurrentPrice>();
+    const prices = new Map(Array.from(quotes, ([ticker, q]) => [ticker, q.price] as const));
     const benchmarkCurrent = prices.get(BENCHMARK_TICKER) ?? null;
 
     // 2. SPY's close on each search's date (nearest prior trading close on weekends/holidays)
@@ -46,10 +48,11 @@ export async function GET() {
     // 3. Split checks, only for picks that will actually be scored (saved price + current price)
     const splitRequests = searches.flatMap((s, i) =>
       s.picks
-        .filter((p) => p.priceAtSearch !== null && prices.has(p.ticker))
-        .map((p) => ({ ticker: p.ticker, asOfDate: asOfDates[i] }))
+        .filter((p) => p.priceAtSearch !== null && quotes.has(p.ticker))
+        // quoteDate: a split is only applied once it's in the current price (review fix)
+        .map((p) => ({ ticker: p.ticker, asOfDate: asOfDates[i], quoteDate: quotes.get(p.ticker)!.tradingDate }))
     );
-    const splitFactors = await getSplitFactors(splitRequests);
+    const splitFactors = await getSplitFactors(splitRequests, now);
 
     // 4. Score each search, then the overall roll-up
     const cards = searches.map((s) =>

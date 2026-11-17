@@ -87,6 +87,20 @@ describe('Track record math (Phase D)', () => {
       expect(findCloseOnOrBefore('2026-08-01', SPY_CLOSES, LONG_AFTER)).toBeNull();
     });
 
+    it('a search dated today resolves to null (not yesterday’s close) until today’s session has closed', () => {
+      // Review finding: Yahoo had bars only through 11-16; at 12:00 ET on 11-17 this used to
+      // return 11-16's close, which is final, so it was cached as 11-17's close for 10 years.
+      const throughYesterday = [bar('2026-11-13', 740), bar('2026-11-16', 739.95)];
+      const noonEt = new Date('2026-11-17T17:00:00Z');
+      expect(findCloseOnOrBefore('2026-11-17', throughYesterday, noonEt)).toBeNull();
+      // Once the session is over, the same request may resolve
+      const evening = new Date('2026-11-17T22:00:00Z');
+      expect(findCloseOnOrBefore('2026-11-17', [...throughYesterday, bar('2026-11-17', 732.44)], evening)).toEqual({
+        date: '2026-11-17',
+        close: 732.44,
+      });
+    });
+
     it('never uses today’s close before it is final (16:30 ET)', () => {
       const today = [bar('2026-11-17', 732.44)];
       expect(isFinalClose('2026-11-17', new Date('2026-11-17T21:00:00Z'))).toBe(false); // 16:00 EST
@@ -225,13 +239,34 @@ describe('Track record math (Phase D)', () => {
       // Scored: A90 F80 C70 E60 B50 -> top A,F; middle C left out; bottom E,B
       expect(halves.top.map((x) => x.ticker)).toEqual(['A', 'F']);
       expect(halves.bottom.map((x) => x.ticker)).toEqual(['E', 'B']);
-      expect(halves.middleLeftOut).toBe(1);
+      expect(halves.leftOutAtBoundary).toBe(1);
       expect(halves.unscored).toBe(1);
     });
 
-    it('breaks score ties by ticker so the split is repeatable', () => {
-      const halves = splitByScore([p('Z', 50), p('A', 50)]);
-      expect(halves.top[0].ticker).toBe('A');
+    it('leaves out picks tied at the boundary score instead of splitting them alphabetically', () => {
+      // Review finding: B and C tie at 70 across the boundary; which half each landed in
+      // used to depend on alphabetical order
+      const even = splitByScore([p('A', 90), p('C', 70), p('B', 70), p('D', 50)]);
+      expect(even.top.map((x) => x.ticker)).toEqual(['A']);
+      expect(even.bottom.map((x) => x.ticker)).toEqual(['D']);
+      expect(even.leftOutAtBoundary).toBe(2);
+
+      // Odd count: everything tied with the middle score is left out with it
+      const odd = splitByScore([p('A', 90), p('B', 70), p('C', 70), p('D', 70), p('E', 50)]);
+      expect(odd.top.map((x) => x.ticker)).toEqual(['A']);
+      expect(odd.bottom.map((x) => x.ticker)).toEqual(['E']);
+      expect(odd.leftOutAtBoundary).toBe(3);
+
+      // Ties inside one half don't matter and stay in
+      const inside = splitByScore([p('A', 90), p('B', 90), p('C', 50), p('D', 40)]);
+      expect(inside.top.map((x) => x.ticker).sort()).toEqual(['A', 'B']);
+      expect(inside.leftOutAtBoundary).toBe(0);
+
+      // All tied: no halves at all
+      const all = splitByScore([p('Z', 50), p('A', 50)]);
+      expect(all.top).toEqual([]);
+      expect(all.bottom).toEqual([]);
+      expect(all.leftOutAtBoundary).toBe(2);
     });
   });
 

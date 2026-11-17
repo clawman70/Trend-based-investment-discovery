@@ -33,35 +33,56 @@ export const QUOTE_CACHE_MS = 5 * 60 * 1000;
 /** "Permanent" for a past close: ten years. */
 export const PERMANENT_CACHE_MS = 10 * 365 * MS_PER_DAY;
 const SPLITS_CACHE_MS = 24 * 60 * 60 * 1000;
+/**
+ * A split list fetched less than this long after a session's open is not trusted to include
+ * a split that took effect at that open (Yahoo can be slow to post it), so it's refetched.
+ */
+const SPLIT_POSTING_LAG_MS = 60 * 60 * 1000;
 /** How far before the earliest as-of date to request SPY history (covers weekends + holidays). */
 const HISTORY_LOOKBACK_DAYS = 10;
 
 export const benchmarkCloseCacheKey = (asOfDate: string) => `benchmark-close:v1:${BENCHMARK_TICKER}:${asOfDate}`;
-const splitsCacheKey = (ticker: string) => `splits:v1:${ticker}`;
+// v2 adds coveredThrough (review fix); v1 entries can't prove what they cover, so they're ignored
+const splitsCacheKey = (ticker: string) => `splits:v2:${ticker}`;
 
 const isPositive = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
+
+export interface CurrentPrice {
+  price: number;
+  /**
+   * Trading day the price belongs to (priceAsOfDate of the quote's own timestamp): before the
+   * open it's still the previous session's close. Used so a split is only applied once it's
+   * actually in the price. Falls back to now when Finnhub sends no timestamp.
+   */
+  tradingDate: string;
+}
+
+function toCurrentPrice(quote: FinnhubQuote, now: Date): CurrentPrice {
+  const at = isPositive(quote.t) ? new Date(quote.t * 1000) : now;
+  return { price: quote.c, tradingDate: priceAsOfDate(at) };
+}
 
 /**
  * Current price for each ticker (uppercase keys). Tickers are de-duplicated first, so each
  * unique ticker costs at most one Finnhub /quote call. A ticker with no quote (delisted,
  * unknown, Finnhub error) is simply missing from the map; callers show it as excluded/N/A.
  */
-export async function getCurrentPrices(tickers: string[]): Promise<Map<string, number>> {
+export async function getCurrentPrices(tickers: string[], now: Date = new Date()): Promise<Map<string, CurrentPrice>> {
   const unique = Array.from(new Set(tickers.map((t) => t.trim().toUpperCase()).filter(Boolean)));
-  const prices = new Map<string, number>();
+  const prices = new Map<string, CurrentPrice>();
 
   await Promise.all(
     unique.map(async (ticker) => {
       const key = `quote:${ticker}`;
       const hit = (await getCachedData(key)) as FinnhubQuote | null;
       if (hit && isPositive(hit.c)) {
-        prices.set(ticker, hit.c);
+        prices.set(ticker, toCurrentPrice(hit, now));
         return;
       }
       try {
         const quote = await fetchQuote(ticker); // rate-limited inside finnhubService
         if (quote && isPositive(quote.c)) {
-          prices.set(ticker, quote.c);
+          prices.set(ticker, toCurrentPrice(quote, now));
           await setCachedData(key, 'financial', quote, QUOTE_CACHE_MS);
         }
       } catch (err) {
@@ -108,29 +129,53 @@ export async function getBenchmarkStartCloses(
 interface CachedSplits {
   /** Earliest date the cached list covers (YYYY-MM-DD). */
   since: string;
+  /**
+   * Latest trading day whose splits the list is trusted to include: the session that had
+   * been open for SPLIT_POSTING_LAG_MS when it was fetched.
+   */
+  coveredThrough: string;
   events: { date: string; numerator: number; denominator: number }[];
 }
 
 /**
  * Split adjustment factor for each (ticker, as-of date) request, keyed by splitKey().
- * One Yahoo call per unique ticker (covering its earliest as-of date), cached 24 hours.
+ * One Yahoo call per unique ticker (covering its earliest as-of date), cached up to 24 hours.
  * null = the split check failed for that ticker.
+ *
+ * Review fix: quotes are cached 5 minutes but split lists 24 hours, so a split taking effect
+ * the morning after the list was cached used to be paired with a post-split quote at factor
+ * 1 (a 10-for-1 split looked like -90%). Now:
+ * - a cached list is only reused if it covers the quote's trading day (coveredThrough),
+ *   otherwise it's refetched; and
+ * - only splits on or before the quote's trading day are applied (splitFactorAfter's
+ *   throughDate), so a pre-open, pre-split quote isn't adjusted for a split starting today.
  */
 export async function getSplitFactors(
-  requests: { ticker: string; asOfDate: string }[]
+  requests: { ticker: string; asOfDate: string; quoteDate: string }[],
+  now: Date = new Date()
 ): Promise<Map<string, number | null>> {
-  const earliestByTicker = new Map<string, string>();
+  const rangeByTicker = new Map<string, { earliest: string; latestQuote: string }>();
   for (const r of requests) {
     const t = r.ticker.toUpperCase();
-    const prev = earliestByTicker.get(t);
-    if (!prev || r.asOfDate < prev) earliestByTicker.set(t, r.asOfDate);
+    const prev = rangeByTicker.get(t);
+    rangeByTicker.set(t, {
+      earliest: !prev || r.asOfDate < prev.earliest ? r.asOfDate : prev.earliest,
+      latestQuote: !prev || r.quoteDate > prev.latestQuote ? r.quoteDate : prev.latestQuote,
+    });
   }
 
   const eventsByTicker = new Map<string, SplitEvent[] | null>();
   await Promise.all(
-    Array.from(earliestByTicker.entries()).map(async ([ticker, earliest]) => {
+    Array.from(rangeByTicker.entries()).map(async ([ticker, { earliest, latestQuote }]) => {
       const hit = (await getCachedData(splitsCacheKey(ticker))) as CachedSplits | null;
-      if (hit && typeof hit.since === 'string' && hit.since <= earliest && Array.isArray(hit.events)) {
+      if (
+        hit &&
+        typeof hit.since === 'string' &&
+        hit.since <= earliest &&
+        typeof hit.coveredThrough === 'string' &&
+        hit.coveredThrough >= latestQuote &&
+        Array.isArray(hit.events)
+      ) {
         eventsByTicker.set(ticker, hit.events.map((e) => ({ ...e, date: new Date(e.date) })));
         return;
       }
@@ -139,6 +184,7 @@ export async function getSplitFactors(
       if (events) {
         const toCache: CachedSplits = {
           since: earliest,
+          coveredThrough: priceAsOfDate(new Date(now.getTime() - SPLIT_POSTING_LAG_MS)),
           events: events.map((e) => ({ date: e.date.toISOString(), numerator: e.numerator, denominator: e.denominator })),
         };
         await setCachedData(splitsCacheKey(ticker), 'financial', toCache, SPLITS_CACHE_MS);
@@ -149,7 +195,7 @@ export async function getSplitFactors(
   const factors = new Map<string, number | null>();
   for (const r of requests) {
     const events = eventsByTicker.get(r.ticker.toUpperCase());
-    factors.set(splitKey(r.ticker, r.asOfDate), events ? splitFactorAfter(r.asOfDate, events) : null);
+    factors.set(splitKey(r.ticker, r.asOfDate), events ? splitFactorAfter(r.asOfDate, events, r.quoteDate) : null);
   }
   return factors;
 }

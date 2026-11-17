@@ -126,10 +126,14 @@ export function isFinalClose(tradingDate: string, now: Date): boolean {
  *
  * Returns null when:
  * - there is no close within MAX_CLOSE_GAP_DAYS before the date (data gap or bad input), or
- * - the matching close isn't final yet (today, before 16:30 ET). Never used, so it can never
- *   be cached as if it were history.
+ * - the as-of date's own session isn't over yet (today, before 16:30 ET). The check is on the
+ *   AS-OF DATE, not on the bar found: if Yahoo hasn't posted today's bar yet, the latest bar is
+ *   yesterday's, which is final but the wrong day, and it used to get cached permanently as
+ *   today's close (review finding). Since every bar used is on or before the as-of date, a
+ *   finished as-of date also means a finished bar.
  */
 export function findCloseOnOrBefore(asOfDate: string, closes: DailyClose[], now: Date): ResolvedClose | null {
+  if (!isFinalClose(asOfDate, now)) return null;
   let best: ResolvedClose | null = null;
   for (const bar of closes) {
     if (!(typeof bar.close === 'number' && Number.isFinite(bar.close) && bar.close > 0)) continue;
@@ -139,20 +143,28 @@ export function findCloseOnOrBefore(asOfDate: string, closes: DailyClose[], now:
   }
   if (!best) return null;
   if (calendarDaysBetween(best.date, asOfDate) > MAX_CLOSE_GAP_DAYS) return null;
-  if (!isFinalClose(best.date, now)) return null;
   return best;
 }
 
 /**
- * How many of today's shares one share on `asOfDate` became, from the splits after that date.
- * 1 = no split. Divide the saved start price by this to compare it with today's price.
+ * How many shares one share on `asOfDate` had become by `throughDate`, from the splits in
+ * between. 1 = no split. Divide the saved start price by this to compare it with a price
+ * from `throughDate`.
+ *
+ * `throughDate` is the trading day the CURRENT quote belongs to (priceAsOfDate of the quote's
+ * own timestamp). A split taking effect after that day isn't in the quote yet: e.g. at 9:00 ET
+ * on a split's ex-date the quote is still yesterday's pre-split close, so applying the split
+ * would turn a flat stock into +900% (review finding). Omit it to count every later split.
  */
-export function splitFactorAfter(asOfDate: string, splits: SplitEvent[]): number {
+export function splitFactorAfter(asOfDate: string, splits: SplitEvent[], throughDate?: string): number {
   let factor = 1;
   for (const split of splits) {
     if (!(split.numerator > 0 && split.denominator > 0)) continue; // malformed event: ignore
+    const splitDate = easternParts(split.date).date;
     // A split on the as-of date itself is already in a price captured after that day's open
-    if (easternParts(split.date).date > asOfDate) factor *= split.numerator / split.denominator;
+    if (splitDate <= asOfDate) continue;
+    if (throughDate !== undefined && splitDate > throughDate) continue;
+    factor *= split.numerator / split.denominator;
   }
   return factor;
 }
@@ -303,23 +315,40 @@ export function summarize(rows: FigureRow[]): Figure {
 /**
  * Splits picks into the top-scored and bottom-scored halves of ONE search. Scores are
  * ranks within their own search, so this is the only valid comparison; scores are never
- * compared across searches. With an odd count the middle pick is left out so the halves
- * are equal. Ties are broken by ticker so the split is repeatable. Picks without a saved
- * score are left out and counted.
+ * compared across searches. Picks without a saved score are left out and counted.
+ *
+ * The boundary: with an odd count the middle pick belongs to neither half, so it's left out.
+ * Any pick whose score EQUALS the boundary score is left out with it (review fix): picks
+ * tied across the line used to be assigned by alphabetical ticker order, which is arbitrary.
+ * The halves can then differ in size; each figure shows its own pick count.
  */
 export function splitByScore<T extends { ticker: string; compositeScore: number | null }>(
   picks: T[]
-): { top: T[]; bottom: T[]; middleLeftOut: number; unscored: number } {
+): { top: T[]; bottom: T[]; leftOutAtBoundary: number; unscored: number } {
   const scored = picks.filter((p) => typeof p.compositeScore === 'number' && Number.isFinite(p.compositeScore));
+  const unscored = picks.length - scored.length;
   const sorted = [...scored].sort(
     (a, b) => (b.compositeScore as number) - (a.compositeScore as number) || a.ticker.localeCompare(b.ticker)
   );
-  const half = Math.floor(sorted.length / 2);
+  const n = sorted.length;
+  const half = Math.floor(n / 2);
+  const scoreAt = (i: number) => sorted[i].compositeScore as number;
+
+  // Boundary score: the middle pick's (odd count), or the shared score when the last pick of
+  // the top half ties the first pick of the bottom half (even count). Null = clean split.
+  let boundary: number | null = null;
+  if (n % 2 === 1) boundary = scoreAt(half);
+  else if (n >= 2 && scoreAt(half - 1) === scoreAt(half)) boundary = scoreAt(half);
+
+  if (boundary === null) {
+    return { top: sorted.slice(0, half), bottom: sorted.slice(n - half), leftOutAtBoundary: 0, unscored };
+  }
+  const b = boundary;
   return {
-    top: sorted.slice(0, half),
-    bottom: sorted.slice(sorted.length - half),
-    middleLeftOut: sorted.length % 2,
-    unscored: picks.length - scored.length,
+    top: sorted.filter((p) => (p.compositeScore as number) > b),
+    bottom: sorted.filter((p) => (p.compositeScore as number) < b),
+    leftOutAtBoundary: sorted.filter((p) => p.compositeScore === b).length,
+    unscored,
   };
 }
 
@@ -358,7 +387,8 @@ export interface SearchScorecard {
   figure: Figure;
   topHalf: Figure | null;
   bottomHalf: Figure | null;
-  middleLeftOut: number;
+  /** Picks at the boundary score (odd middle pick plus any tied with it), in neither half. */
+  leftOutAtBoundary: number;
   unscored: number;
   /** Old enough (MIN_DAYS_TO_READ+) to count in the overall figures. */
   countsInOverall: boolean;
@@ -422,7 +452,7 @@ export function buildSearchScorecard(search: SearchInput, ctx: ScorecardContext)
     figure: summarize(toRows(outcomes, days)),
     topHalf: halves.top.length ? summarize(toRows(halves.top, days)) : null,
     bottomHalf: halves.bottom.length ? summarize(toRows(halves.bottom, days)) : null,
-    middleLeftOut: halves.middleLeftOut,
+    leftOutAtBoundary: halves.leftOutAtBoundary,
     unscored: halves.unscored,
     countsInOverall: days >= MIN_DAYS_TO_READ,
     picks: outcomes,
@@ -439,6 +469,8 @@ export interface OverallScorecard {
   figure: Figure;
   topHalf: Figure;
   bottomHalf: Figure;
+  /** Picks left out of both pooled halves because they sat at a search's boundary score. */
+  leftOutAtBoundary: number;
 }
 
 /**
@@ -455,12 +487,14 @@ export function buildOverall(cards: SearchScorecard[]): OverallScorecard {
   const top: FigureRow[] = [];
   const bottom: FigureRow[] = [];
   let noBenchmark = 0;
+  let leftOutAtBoundary = 0;
 
   for (const card of counted) {
     const included = card.picks.filter((p) => p.status === 'included');
     noBenchmark += toRows(included, card.daysElapsed).length - rowsFor(included, card.daysElapsed).length;
     all.push(...rowsFor(included, card.daysElapsed));
     const halves = splitByScore(included);
+    leftOutAtBoundary += halves.leftOutAtBoundary;
     top.push(...rowsFor(halves.top, card.daysElapsed));
     bottom.push(...rowsFor(halves.bottom, card.daysElapsed));
   }
@@ -477,5 +511,6 @@ export function buildOverall(cards: SearchScorecard[]): OverallScorecard {
     figure: summarize(all),
     topHalf: summarize(top),
     bottomHalf: summarize(bottom),
+    leftOutAtBoundary,
   };
 }
