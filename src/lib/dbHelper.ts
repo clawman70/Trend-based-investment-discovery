@@ -34,14 +34,18 @@ function hasPostgresUrl(): boolean {
  * True if Postgres is configured and reachable right now. Result is memoized for
  * AVAILABILITY_RECHECK_MS so a request that touches several stores doesn't re-ping the
  * DB for each one, while still recovering automatically once the DB comes back.
+ *
+ * `fresh: true` skips the memo and pings now (used by GET /api/status, so the status
+ * bar notices an outage or recovery within one poll instead of up to 30 seconds later).
+ * The fresh result also updates the memo, so the stores switch over at the same time.
  */
-export async function isDbAvailable(): Promise<boolean> {
+export async function isDbAvailable(opts: { fresh?: boolean } = {}): Promise<boolean> {
   if (!hasPostgresUrl()) {
     return false;
   }
 
   const now = Date.now();
-  if (cachedAvailability && now - cachedAvailability.checkedAt < AVAILABILITY_RECHECK_MS) {
+  if (!opts.fresh && cachedAvailability && now - cachedAvailability.checkedAt < AVAILABILITY_RECHECK_MS) {
     return cachedAvailability.value;
   }
 
@@ -54,6 +58,16 @@ export async function isDbAvailable(): Promise<boolean> {
     cachedAvailability = { value: false, checkedAt: now };
     return false;
   }
+}
+
+export type StorageStatus =
+  | { mode: 'postgres'; reason: null }
+  | { mode: 'memory'; reason: 'not_configured' | 'unreachable' };
+
+/** Where saved items are going right now, checked fresh. Used by GET /api/status. */
+export async function getStorageStatus(): Promise<StorageStatus> {
+  if (!hasPostgresUrl()) return { mode: 'memory', reason: 'not_configured' };
+  return (await isDbAvailable({ fresh: true })) ? { mode: 'postgres', reason: null } : { mode: 'memory', reason: 'unreachable' };
 }
 
 // ---------------------------------------------------------------------------

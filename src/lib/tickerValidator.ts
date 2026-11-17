@@ -78,6 +78,16 @@ export async function getListingDirectory(): Promise<ListingDirectory | null> {
   }
 }
 
+/**
+ * Size of the listing directory if it is already cached, or null if it isn't loaded.
+ * Read-only: never triggers a Finnhub download (GET /api/status polls this).
+ */
+export async function peekListingDirectorySize(): Promise<number | null> {
+  const cached = (await getCachedData(DIRECTORY_CACHE_KEY)) as ListingDirectory | null;
+  const size = cached ? Object.keys(cached).length : 0;
+  return size > 0 ? size : null;
+}
+
 /** Looks up one listing (exchange + official name). Null if unknown or directory unavailable. */
 export async function getListing(ticker: string): Promise<Listing | null> {
   const directory = await getListingDirectory();
