@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Filters } from '../lib/types';
+import { MAX_THESES_PER_RUN, MAX_THESIS_CHARS } from '../lib/inputLimits';
 
 interface InputPanelProps {
   trends: string[];
@@ -75,7 +76,7 @@ export const InputPanel: React.FC<InputPanelProps> = ({
   };
 
   const addTrendField = () => {
-    if (trends.length < 3) {
+    if (trends.length < MAX_THESES_PER_RUN) {
       setTrends([...trends, '']);
       setActiveInputIdx(trends.length);
     }
@@ -144,7 +145,12 @@ export const InputPanel: React.FC<InputPanelProps> = ({
                 placeholder="Describe an emerging investment trend, e.g., 'Companies specializing in solid-state batteries or energy density tech'..."
                 className="w-full h-24 pt-7 px-4 pb-3 bg-brand-primary/60 border border-brand-border rounded-xl focus:ring-2 focus:ring-brand-green/50 focus:border-brand-green focus:outline-none transition duration-200 text-sm font-mono placeholder:text-brand-light/30 leading-relaxed resize-none"
                 disabled={isLoading}
+                maxLength={MAX_THESIS_CHARS}
               />
+              {/* Character count; the server rejects anything over the limit (Phase E) */}
+              <span className={`absolute right-3 bottom-2 text-[10px] font-mono ${t.length > MAX_THESIS_CHARS ? 'text-brand-red' : t.length > MAX_THESIS_CHARS * 0.9 ? 'text-brand-yellow' : 'text-zinc-600'}`}>
+                {t.length}/{MAX_THESIS_CHARS}
+              </span>
             </div>
             {trends.length > 1 && (
               <button
@@ -160,7 +166,7 @@ export const InputPanel: React.FC<InputPanelProps> = ({
         ))}
       </div>
 
-      {trends.length < 3 && (
+      {trends.length < MAX_THESES_PER_RUN && (
         <div className="mt-3 flex justify-start">
           <button
             type="button"

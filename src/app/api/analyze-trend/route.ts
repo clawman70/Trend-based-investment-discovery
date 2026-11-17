@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCachedData, setCachedData } from '@/lib/dbHelper';
 import { analyzeTrendFromAI } from '@/lib/claudeService';
 import { TrendAnalysis } from '@/lib/types';
+import { checkThesisLimits } from '@/lib/inputLimits';
 
 const CACHE_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
@@ -10,8 +11,13 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { trend } = body as { trend: string };
 
-    if (!trend || !trend.trim()) {
+    if (!trend || typeof trend !== 'string' || !trend.trim()) {
       return NextResponse.json({ error: 'Trend thesis is required' }, { status: 400 });
+    }
+    // Same 500-character limit as /api/discover (Phase E)
+    const limitError = checkThesisLimits([trend]);
+    if (limitError) {
+      return NextResponse.json({ error: limitError }, { status: 400 });
     }
 
     const normalizedTrend = trend.trim().toLowerCase();

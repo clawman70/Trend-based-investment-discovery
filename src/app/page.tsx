@@ -15,10 +15,13 @@ import { DetailsModal } from '@/components/DetailsModal';
 import { ResearchPanel } from '@/components/ResearchPanel';
 import { ResearchReport } from '@/components/ResearchReport';
 import { SpendCapBanner } from '@/components/SpendCapBanner';
+import { StatusBar } from '@/components/StatusBar';
 import { ScoredCompanyData, Filters, ScoringWeights, TrendAnalysis, TrendResearchReport } from '@/lib/types';
 import { buildScoringConfig, DEFAULT_WEIGHTS, parseScoringConfig, scoreAndRank } from '@/lib/scoring';
 import { applyRealDataFilters } from '@/lib/resultFilters';
 import { buildRationaleNote } from '@/lib/rationale';
+import { describeCacheAge, formatElapsed } from '@/lib/cacheAge';
+import type { DiscoveryCacheInfo } from '@/app/api/discover/route';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<string>('research');
@@ -60,6 +63,22 @@ export default function Home() {
   const [isDiscovering, setIsDiscovering] = useState<boolean>(false);
   const [loadingStep, setLoadingStep] = useState<'idle' | 'analyzing' | 'discovering' | 'enriching' | 'completed'>('idle');
   const [error, setError] = useState<string | null>(null);
+
+  // Phase E discovery refresh. discoveryCache = which theses in the results on screen
+  // came from the 7-day cache (and when). lastRun = the exact theses + filters behind
+  // those results, so Refresh re-runs what is shown even if the inputs were edited since.
+  const [discoveryCache, setDiscoveryCache] = useState<DiscoveryCacheInfo[]>([]);
+  const [lastRun, setLastRun] = useState<{ trends: string[]; filters: Filters } | null>(null);
+  const [isRefreshRun, setIsRefreshRun] = useState<boolean>(false);
+  // Real elapsed time of the current discovery run (a fresh AI search took ~8 minutes
+  // when measured live in Phase C), so a long wait visibly is still progressing.
+  const [discoverStartedAt, setDiscoverStartedAt] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (discoverStartedAt === null) return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [discoverStartedAt]);
 
   // Watchlist tracker
   const [watchlistTickers, setWatchlistTickers] = useState<Set<string>>(new Set());
@@ -157,6 +176,8 @@ export default function Home() {
       setInvalidTickers([]);
       setValidationBypassed(false);
       setFailedTrends([]);
+      setDiscoveryCache([]); // restored from History, not from the discovery cache
+      setLastRun({ trends: data.search.trends, filters: data.search.filters });
       setCurrentSearchId(id); // stars from a restored search link back to it (B9)
       setResultsFromHistory(true);
       setShowDiscoverButton(true);
@@ -218,14 +239,27 @@ export default function Home() {
     }
   }, [trends]);
 
-  const handleDiscoverCandidates = useCallback(async () => {
-    const activeTrends = trends.filter((t) => t.trim().length > 0);
+  /**
+   * Runs discovery. With `forceRefresh` (the Refresh button) it re-runs `override` — the
+   * theses and filters behind the results on screen — and the server skips its cache.
+   */
+  const handleDiscoverCandidates = useCallback(async (
+    opts: { forceRefresh?: boolean; override?: { trends: string[]; filters: Filters } } = {}
+  ) => {
+    const forceRefresh = opts.forceRefresh === true;
+    const runFilters = opts.override?.filters ?? filters;
+    const activeTrends = (opts.override?.trends ?? trends).filter((t) => t.trim().length > 0);
     if (activeTrends.length === 0) {
       setError('Please enter at least one investment thesis.');
       return;
     }
 
     setIsDiscovering(true);
+    setIsRefreshRun(forceRefresh);
+    setDiscoverStartedAt(Date.now());
+    setNowTick(Date.now());
+    setDiscoveryCache([]);
+    setLastRun({ trends: activeTrends, filters: runFilters });
     setLoadingStep('discovering');
     setError(null);
     setResults([]);
@@ -239,7 +273,7 @@ export default function Home() {
       const discoverResponse = await fetch('/api/discover', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trends: activeTrends, filters }),
+        body: JSON.stringify({ trends: activeTrends, filters: runFilters, forceRefresh }),
       });
 
       if (!discoverResponse.ok) {
@@ -253,7 +287,9 @@ export default function Home() {
         failedTrends?: string[];
         thesesRun?: number;
         validationMetrics?: { validationBypassed?: boolean };
+        cache?: DiscoveryCacheInfo[];
       };
+      setDiscoveryCache(discoverData.cache || []);
       // Server counts only theses that succeeded (bug B4); fall back to what was submitted
       const runThesesCount = discoverData.thesesRun ?? activeTrends.length;
       setThesesRun(runThesesCount);
@@ -320,7 +356,7 @@ export default function Home() {
       // AI only sees them as text hints, so a company whose actual market cap or listing
       // exchange doesn't fit gets dropped here rather than trusted from the model's answer.
       // Unknown values are kept (see src/lib/resultFilters.ts).
-      const capFilteredResults = applyRealDataFilters(mergedResults, filters);
+      const capFilteredResults = applyRealDataFilters(mergedResults, runFilters);
 
       if (capFilteredResults.length === 0) {
         setError('No companies matched your filters after checking real market cap and exchange data. Try broadening your market-cap or exchange selection.');
@@ -343,9 +379,9 @@ export default function Home() {
           body: JSON.stringify({
             trends: activeTrends,
             filters: {
-              marketCap: filters.marketCap,
-              exchange: filters.exchange,
-              currentPrice: filters.currentPrice,
+              marketCap: runFilters.marketCap,
+              exchange: runFilters.exchange,
+              currentPrice: runFilters.currentPrice,
             },
             trendAnalysis: trendAnalyses,
             // Saved so a restored search re-scores the same way (and for the Phase D track record)
@@ -379,6 +415,8 @@ export default function Home() {
       setLoadingStep('idle');
     } finally {
       setIsDiscovering(false);
+      setIsRefreshRun(false);
+      setDiscoverStartedAt(null);
     }
   }, [trends, filters, weights, trendAnalyses, pendingLoadedThesis]);
 
@@ -424,17 +462,8 @@ export default function Home() {
       }} />
       
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
-        {/* Terminal Header Info */}
-        <div className="bg-brand-secondary/40 border border-brand-border/40 px-5 py-3 rounded-lg mb-6 flex flex-wrap justify-between items-center text-xs font-mono text-brand-light gap-2">
-          <div className="flex items-center space-x-2">
-            <span className="w-2.5 h-2.5 bg-brand-green rounded-full inline-block animate-ping" />
-            <span>TERMINAL STATUS: ONLINE</span>
-          </div>
-          <div className="flex items-center space-x-4">
-            <span>AI: CLAUDE + GEMINI (RESEARCH)</span>
-            <span>DATA: FINNHUB + YAHOO FINANCE</span>
-          </div>
-        </div>
+        {/* Real status bar: storage mode, API keys, ticker directory, spend (GET /api/status) */}
+        <StatusBar />
 
         <SpendCapBanner />
 
@@ -463,7 +492,7 @@ export default function Home() {
               filters={filters}
               setFilters={setFilters}
               onAnalyze={handleAnalyzeTrends}
-              onDiscover={handleDiscoverCandidates}
+              onDiscover={() => handleDiscoverCandidates()}
               isAnalyzing={isAnalyzing}
               isDiscovering={isDiscovering}
               showDiscoverButton={showDiscoverButton}
@@ -501,6 +530,13 @@ export default function Home() {
                     ? 'AI Model scanning market for candidates matching theses intersection...'
                     : 'Fetching live prices, fundamentals & price history...'}
                 </p>
+                {discoverStartedAt !== null && (
+                  <p data-testid="discover-elapsed" className="text-xs text-brand-green mt-3 font-mono">
+                    {isRefreshRun ? 'REFRESHING — ' : ''}ELAPSED {formatElapsed(nowTick - discoverStartedAt)}
+                    {loadingStep === 'discovering' &&
+                      ' · a fresh AI web search can take several minutes (one run measured ~8 min); cached theses return in seconds'}
+                  </p>
+                )}
                 <p className="text-xs text-brand-light mt-1.5 font-mono">
                   {loadingStep === 'analyzing'
                     ? 'Assessing estimated TAM size, triggers, and macro risks'
@@ -528,6 +564,28 @@ export default function Home() {
             {/* Invalid Ticker Alerts */}
             {!isLoading && (invalidTickers.length > 0 || validationBypassed || failedTrends.length > 0) && (
               <ValidationAlerts invalidTickers={invalidTickers} bypassed={validationBypassed} failedTrends={failedTrends} />
+            )}
+
+            {/* Cached-result notice + Refresh (Phase E) */}
+            {!isLoading && results.length > 0 && discoveryCache.some((d) => d.fromCache) && lastRun && (
+              <div data-testid="discovery-cache-notice" className="bg-brand-secondary/40 border border-brand-border/40 px-5 py-3 rounded-lg flex flex-wrap items-center justify-between gap-3 text-xs font-mono text-brand-light">
+                <div className="space-y-0.5">
+                  {discoveryCache.filter((d) => d.fromCache).map((d) => (
+                    <div key={d.trend}>
+                      <span className="text-brand-yellow uppercase">{describeCacheAge(d.cachedAt)}</span>
+                      {discoveryCache.length > 1 && <span className="text-zinc-500"> · &quot;{d.trend}&quot;</span>}
+                    </div>
+                  ))}
+                  <div className="text-zinc-500">Company list from the 7-day discovery cache. Prices and fundamentals below are re-fetched from market data.</div>
+                </div>
+                <button
+                  onClick={() => handleDiscoverCandidates({ forceRefresh: true, override: lastRun })}
+                  className="px-3 py-1.5 border border-brand-green/40 text-brand-green bg-brand-green/5 hover:bg-brand-green/10 rounded font-bold cursor-pointer"
+                  title="Run a new AI search for these theses (takes minutes and costs API credits)"
+                >
+                  ↻ REFRESH
+                </button>
+              </div>
             )}
 
             {/* Matrix Result & Weight Slider Dashboard */}

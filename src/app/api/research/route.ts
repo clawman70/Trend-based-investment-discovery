@@ -19,7 +19,13 @@ export async function POST(request: NextRequest) {
     if (!forceRefresh) {
       const cachedScan = await findCachedScan({ mode, sortedDomains, customPrompt: cleanPrompt });
       if (cachedScan) {
-        return NextResponse.json({ scanId: cachedScan.id, ...cachedScan.report });
+        // fromCache / cachedAt drive the "cached N days ago" label and Refresh button (Phase E)
+        return NextResponse.json({
+          scanId: cachedScan.id,
+          ...cachedScan.report,
+          fromCache: true,
+          cachedAt: new Date(cachedScan.createdAt).toISOString(),
+        });
       }
     }
 
@@ -42,7 +48,7 @@ export async function POST(request: NextRequest) {
       ttlMs: CACHE_TTL_MS,
     });
 
-    return NextResponse.json({ scanId: scan.id, ...report });
+    return NextResponse.json({ scanId: scan.id, ...report, fromCache: false, cachedAt: null });
   } catch (error: unknown) {
     console.error('Error in /api/research POST handler:', error);
     const errorMsg = error instanceof Error ? error.message : 'Internal Server Error';

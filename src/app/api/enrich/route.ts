@@ -11,6 +11,7 @@ import {
 import { fetchPriceGrowth, PriceHistoryGrowth, RALLY_THRESHOLD_PCT } from '@/lib/yahooService';
 import { getListing, normalizeTicker } from '@/lib/tickerValidator';
 import { DataQuality, Exchange } from '@/lib/types';
+import { MAX_TICKERS_PER_ENRICH } from '@/lib/inputLimits';
 
 // Prices go stale fast; fundamentals and multi-year growth don't
 const QUOTE_CACHE_MS = 5 * 60 * 1000;
@@ -106,6 +107,19 @@ export async function POST(request: NextRequest) {
 
     if (!tickers || !Array.isArray(tickers) || tickers.length === 0) {
       return NextResponse.json({ error: 'Tickers array is required' }, { status: 400 });
+    }
+
+    if (tickers.some((t) => typeof t !== 'string' || t.trim() === '')) {
+      return NextResponse.json({ error: 'Each ticker must be a non-empty string.' }, { status: 400 });
+    }
+
+    // Input limit (Phase E): each ticker costs several Finnhub/Yahoo calls
+    const uniqueCount = new Set(tickers.map(normalizeTicker)).size;
+    if (uniqueCount > MAX_TICKERS_PER_ENRICH) {
+      return NextResponse.json(
+        { error: `Too many tickers: ${uniqueCount} sent, the limit is ${MAX_TICKERS_PER_ENRICH} per request.` },
+        { status: 400 }
+      );
     }
 
     if (!isFinnhubConfigured()) {
