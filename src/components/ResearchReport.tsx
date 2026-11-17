@@ -17,7 +17,11 @@ function unverifiedLabel(comp: MentionedCompany): string {
 
 interface ResearchReportProps {
   report: TrendResearchReport & { scanId: string };
-  onLoadThesis: (thesis: string) => void;
+  /**
+   * loadedId = id of the audit record logged for this load (null if logging failed). The
+   * page keeps it so the search this thesis leads to can be written back (bug B9).
+   */
+  onLoadThesis: (thesis: string, loadedId: string | null) => void;
 }
 
 export const ResearchReport: React.FC<ResearchReportProps> = ({ report, onLoadThesis }) => {
@@ -96,7 +100,7 @@ export const ResearchReport: React.FC<ResearchReportProps> = ({ report, onLoadTh
     setIsLoadingLoad(thesisStatement);
     try {
       // Log thesis load event to DB
-      await fetch('/api/research/load', {
+      const res = await fetch('/api/research/load', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -104,10 +108,11 @@ export const ResearchReport: React.FC<ResearchReportProps> = ({ report, onLoadTh
           thesis: thesisStatement
         })
       });
-      onLoadThesis(thesisStatement);
+      const logged = res.ok ? ((await res.json()) as { id?: string }) : null;
+      onLoadThesis(thesisStatement, logged?.id ?? null);
     } catch (err) {
       console.warn('Failed to log loaded thesis event:', err);
-      onLoadThesis(thesisStatement); // Proceed anyway
+      onLoadThesis(thesisStatement, null); // Proceed anyway, just unlinked
     } finally {
       setIsLoadingLoad(null);
     }

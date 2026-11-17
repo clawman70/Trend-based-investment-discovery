@@ -226,6 +226,17 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       expect(deleteResponse.status).toBe(200);
       expect(memoryWatchlistItems.length).toBe(0);
     });
+
+    it('stores the search a starred company came from (bug B9)', async () => {
+      const response = await watchlistPOST(
+        new NextRequest('http://localhost:3000/api/watchlist', {
+          method: 'POST',
+          body: JSON.stringify({ ticker: 'qs', companyName: 'QuantumScape', priceAtAdd: 6.5, sourceSearchId: 'search-abc' }),
+        })
+      );
+      expect(response.status).toBe(200);
+      expect(memoryWatchlistItems[0].sourceSearchId).toBe('search-abc');
+    });
   });
 
   describe('Watchlist cost basis when the price is missing (bug B8)', () => {

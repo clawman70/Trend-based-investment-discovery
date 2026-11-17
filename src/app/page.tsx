@@ -23,7 +23,14 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<string>('research');
   const [inspectedTicker, setInspectedTicker] = useState<string | null>(null);
   const [researchReport, setResearchReport] = useState<(TrendResearchReport & { scanId: string }) | null>(null);
-  
+  // Bug B9 (the track-record chain). currentSearchId = the saved history snapshot the
+  // results on screen came from (a fresh run once its auto-save finishes, or a restored
+  // one). Starring a company stores it as the watchlist item's sourceSearchId.
+  const [currentSearchId, setCurrentSearchId] = useState<string | null>(null);
+  // A Research-tab thesis loaded into Discovery: its audit record id, so the search it
+  // leads to can be written back to that record.
+  const [pendingLoadedThesis, setPendingLoadedThesis] = useState<{ id: string; thesis: string } | null>(null);
+
   const [filters, setFilters] = useState<Filters>({
     marketCap: [],
     exchange: [],
@@ -95,6 +102,9 @@ export default function Home() {
             // Only send a real price. If it's missing (0), the watchlist route fetches a
             // live quote itself, and stores N/A if that also fails (bug B8).
             priceAtAdd: company.stockPrice > 0 ? company.stockPrice : null,
+            // The saved search this pick came from (bug B9). Null if the auto-save hasn't
+            // finished yet or failed; the star still works, it just isn't linked.
+            sourceSearchId: currentSearchId ?? undefined,
             // Built from the per-thesis rationale map (bug B1: used to read a field that was never set)
             notes: buildRationaleNote(company.rationales),
             tags: company.trendsMatched || [],
@@ -111,7 +121,7 @@ export default function Home() {
     } catch (err) {
       console.error('Failed to toggle watchlist ticker status:', err);
     }
-  }, [watchlistTickers]);
+  }, [watchlistTickers, currentSearchId]);
 
   const handleRestoreSearch = useCallback(async (id: string) => {
     setError(null);
@@ -140,6 +150,7 @@ export default function Home() {
       setInvalidTickers([]);
       setValidationBypassed(false);
       setFailedTrends([]);
+      setCurrentSearchId(id); // stars from a restored search link back to it (B9)
       setShowDiscoverButton(true);
       setLoadingStep('completed');
       setActiveTab('discover');
@@ -212,6 +223,7 @@ export default function Home() {
     setResults([]);
     setInvalidTickers([]);
     setFailedTrends([]);
+    setCurrentSearchId(null); // set again once this run's snapshot is saved
 
     try {
       // 1. Scan market for companies matching active trends
@@ -316,7 +328,7 @@ export default function Home() {
 
       // 5. Auto-save completed research snapshot to DB History
       try {
-        await fetch('/api/history', {
+        const historyRes = await fetch('/api/history', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -332,6 +344,22 @@ export default function Home() {
             results: scoredResults,
           }),
         });
+
+        // B9: keep the saved search's id so stars link to it, and write it back to the
+        // Research-tab thesis that led here. Only linked when that exact thesis text was
+        // part of this run: an edited thesis is a different thesis.
+        const saved = historyRes.ok ? ((await historyRes.json()) as { id?: string }) : null;
+        if (saved?.id) {
+          setCurrentSearchId(saved.id);
+          if (pendingLoadedThesis && activeTrends.some((t) => t.trim() === pendingLoadedThesis.thesis.trim())) {
+            await fetch('/api/research/load', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: pendingLoadedThesis.id, searchId: saved.id }),
+            }).catch((linkErr) => console.error('Failed to link the loaded thesis to its search:', linkErr));
+            setPendingLoadedThesis(null);
+          }
+        }
       } catch (hErr) {
         console.error('Failed to log search snapshot to history database:', hErr);
       }
@@ -343,7 +371,7 @@ export default function Home() {
     } finally {
       setIsDiscovering(false);
     }
-  }, [trends, filters, weights, trendAnalyses]);
+  }, [trends, filters, weights, trendAnalyses, pendingLoadedThesis]);
 
   const handleSelectAdjacentTrend = useCallback((adjTrend: string) => {
     setTrends((prev) => {
@@ -408,7 +436,8 @@ export default function Home() {
             {researchReport && (
               <ResearchReport
                 report={researchReport}
-                onLoadThesis={(thesis) => {
+                onLoadThesis={(thesis, loadedId) => {
+                  setPendingLoadedThesis(loadedId ? { id: loadedId, thesis } : null);
                   setTrends([thesis]);
                   setActiveTab('discover');
                 }}

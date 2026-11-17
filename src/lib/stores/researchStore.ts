@@ -104,3 +104,24 @@ export async function logLoadedThesis(input: { scanId: string; thesis: string; s
   memoryResearchLoadedTheses.push({ id, scanId: input.scanId, thesis: input.thesis, loadedAt: new Date(), searchId: input.searchId ?? null });
   return { id };
 }
+
+/**
+ * Writes the id of the discovery search a loaded thesis led to back onto its audit record
+ * (bug B9), completing the chain: research scan -> loaded thesis -> search -> picks.
+ * Returns false when the loaded-thesis record doesn't exist.
+ */
+export async function linkLoadedThesisToSearch(id: string, searchId: string): Promise<boolean> {
+  if (await isDbAvailable()) {
+    try {
+      await prisma.researchLoadedThesis.update({ where: { id }, data: { searchId } });
+      return true;
+    } catch {
+      return false; // not found
+    }
+  }
+
+  const record = memoryResearchLoadedTheses.find((t) => t.id === id);
+  if (!record) return false;
+  record.searchId = searchId;
+  return true;
+}
