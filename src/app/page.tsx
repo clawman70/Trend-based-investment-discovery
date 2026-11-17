@@ -31,6 +31,10 @@ export default function Home() {
   // A Research-tab thesis loaded into Discovery: its audit record id, so the search it
   // leads to can be written back to that record.
   const [pendingLoadedThesis, setPendingLoadedThesis] = useState<{ id: string; thesis: string } | null>(null);
+  // True when the results on screen were restored from History. Their prices are from the
+  // search date, so they must not become a watchlist cost basis dated today (found during
+  // the Phase D live check: it made gain/loss and "vs SPY" compare mismatched windows).
+  const [resultsFromHistory, setResultsFromHistory] = useState<boolean>(false);
 
   const [filters, setFilters] = useState<Filters>({
     marketCap: [],
@@ -102,7 +106,9 @@ export default function Home() {
             companyName: company.companyName,
             // Only send a real price. If it's missing (0), the watchlist route fetches a
             // live quote itself, and stores N/A if that also fails (bug B8).
-            priceAtAdd: company.stockPrice > 0 ? company.stockPrice : null,
+            // A restored snapshot's price is from the search date, so send none and let the
+            // server fetch today's quote: the cost basis is the price on the day you star it.
+            priceAtAdd: !resultsFromHistory && company.stockPrice > 0 ? company.stockPrice : null,
             // The saved search this pick came from (bug B9). Null if the auto-save hasn't
             // finished yet or failed; the star still works, it just isn't linked.
             sourceSearchId: currentSearchId ?? undefined,
@@ -122,7 +128,7 @@ export default function Home() {
     } catch (err) {
       console.error('Failed to toggle watchlist ticker status:', err);
     }
-  }, [watchlistTickers, currentSearchId]);
+  }, [watchlistTickers, currentSearchId, resultsFromHistory]);
 
   const handleRestoreSearch = useCallback(async (id: string) => {
     setError(null);
@@ -152,6 +158,7 @@ export default function Home() {
       setValidationBypassed(false);
       setFailedTrends([]);
       setCurrentSearchId(id); // stars from a restored search link back to it (B9)
+      setResultsFromHistory(true);
       setShowDiscoverButton(true);
       setLoadingStep('completed');
       setActiveTab('discover');
@@ -225,6 +232,7 @@ export default function Home() {
     setInvalidTickers([]);
     setFailedTrends([]);
     setCurrentSearchId(null); // set again once this run's snapshot is saved
+    setResultsFromHistory(false);
 
     try {
       // 1. Scan market for companies matching active trends

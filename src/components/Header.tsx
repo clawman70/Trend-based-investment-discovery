@@ -32,7 +32,8 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
         </div>
 
         {/* Tab Navigation */}
-        <nav className="flex items-center space-x-2 bg-black/40 border border-zinc-900 p-1.5 rounded-lg shrink-0">
+        {/* flex-wrap: six tabs don't fit on a phone in one row */}
+        <nav className="flex flex-wrap items-center gap-2 bg-black/40 border border-zinc-900 p-1.5 rounded-lg shrink-0">
           {tabs.map((tab) => {
             const isActive = activeTab === tab.id;
             return (

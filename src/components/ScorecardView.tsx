@@ -38,7 +38,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const TooEarly: React.FC<{ figure: Figure }> = ({ figure }) =>
   figure.tooEarly ? (
     <span
-      className="text-[9px] font-mono font-bold uppercase text-amber-400 bg-amber-950/30 border border-amber-900/40 px-1.5 py-0.5 rounded whitespace-nowrap"
+      className="text-[9px] font-mono font-bold uppercase text-amber-400 bg-amber-950/30 border border-amber-900/40 px-1.5 py-0.5 rounded"
       title={figure.tooEarlyReason ?? undefined}
     >
       Too early to read{figure.tooEarlyReason ? `: ${figure.tooEarlyReason}` : ''}
