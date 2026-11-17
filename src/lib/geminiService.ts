@@ -29,7 +29,7 @@
 import { GoogleGenAI, Type, GenerateContentResponse } from '@google/genai';
 import { CandidateThesis, Source, TrendResearchReport } from './types';
 import { parseResearchOutput, ParsedResearchOutput } from './researchSchema';
-import { recordUsage } from './usageTracker';
+import { geminiUsageComponents, recordUsage } from './usageTracker';
 
 const apiKey = process.env.GOOGLE_GENAI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
@@ -190,9 +190,12 @@ async function runGroundedSearch(searchPrompt: string, maxAttempts = 3): Promise
       })
     );
 
-    await recordUsage('gemini', response.usageMetadata?.promptTokenCount ?? 0, response.usageMetadata?.candidatesTokenCount ?? 0);
+    const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
+    const chunkCount = groundingMetadata?.groundingChunks?.length ?? 0;
+    // Billed as a grounded request when the model actually searched (queries or results present)
+    const grounded = chunkCount > 0 || (groundingMetadata?.webSearchQueries?.length ?? 0) > 0;
+    await recordUsage('gemini', GEMINI_MODEL, geminiUsageComponents(response.usageMetadata, { grounded }));
 
-    const chunkCount = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.length ?? 0;
     if (chunkCount >= MIN_GROUNDING_CHUNKS) {
       return response;
     }
@@ -236,7 +239,7 @@ ${narrative}`;
     })
   );
 
-  await recordUsage('gemini', response.usageMetadata?.promptTokenCount ?? 0, response.usageMetadata?.candidatesTokenCount ?? 0);
+  await recordUsage('gemini', GEMINI_MODEL, geminiUsageComponents(response.usageMetadata, { grounded: false }));
 
   const jsonString = response.text?.trim();
   if (!jsonString) {

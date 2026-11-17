@@ -120,3 +120,16 @@ model CacheEntry {
   @@index([expiresAt])
   @@map("cache_entries")
 }
+
+/// Running total of today's ESTIMATED AI spend, one row per UTC day (Phase E, bug B6).
+/// Its own table (not a cache_entries row) so each AI call can add to it with one atomic
+/// `UPDATE ... SET costMicroUsd = costMicroUsd + n` instead of read-add-write, which lost
+/// updates when discovery fired several AI calls at once. Stored as whole micro-dollars
+/// (1 = $0.000001) so the sum is exact integer math, not floating-point drift.
+model DailySpend {
+  day          String   @id // YYYY-MM-DD, UTC
+  costMicroUsd BigInt   @default(0)
+  updatedAt    DateTime @updatedAt
+
+  @@map("daily_spend")
+}
