@@ -10,6 +10,7 @@ import { memorySearches, memorySearchResults, MemorySearch, MemorySearchResult }
 import { ScoredCompanyData, ScoringConfig, ScoreBreakdown } from '../types';
 import { buildRationaleNote } from '../rationale';
 import { parseScoringConfig } from '../scoring';
+import type { PickInput } from '../trackRecord';
 
 export interface SearchSummary {
   id: string;
@@ -92,6 +93,49 @@ export async function listSearches(): Promise<SearchSummary[]> {
     return rows.map(toSummary);
   }
   return [...memorySearches].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).map(toSummary);
+}
+
+/** A saved search reduced to what the track record needs (Phase D scorecard). */
+export interface SearchWithPicks {
+  id: string;
+  createdAt: Date;
+  trends: string[];
+  picks: PickInput[];
+}
+
+/** Price saved with a pick; null (never 0) when there wasn't a real one. */
+function storedPrice(financialData: unknown): number | null {
+  const price = (financialData as { stockPrice?: unknown } | null)?.stockPrice;
+  return typeof price === 'number' && Number.isFinite(price) && price > 0 ? price : null;
+}
+
+function toPick(row: { ticker: string; companyName: string; compositeScore: number | null; financialData: unknown }): PickInput {
+  return {
+    ticker: row.ticker.toUpperCase(),
+    companyName: row.companyName,
+    compositeScore: typeof row.compositeScore === 'number' ? row.compositeScore : null,
+    priceAtSearch: storedPrice(row.financialData),
+  };
+}
+
+/** Every saved search with its picks, oldest first. */
+export async function listSearchesWithPicks(): Promise<SearchWithPicks[]> {
+  if (await isDbAvailable()) {
+    const rows = await prisma.search.findMany({
+      orderBy: { createdAt: 'asc' },
+      include: { results: { select: { ticker: true, companyName: true, compositeScore: true, financialData: true } } },
+    });
+    return rows.map((s) => ({ id: s.id, createdAt: s.createdAt, trends: s.trends, picks: s.results.map(toPick) }));
+  }
+
+  return [...memorySearches]
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    .map((s) => ({
+      id: s.id,
+      createdAt: s.createdAt,
+      trends: s.trends,
+      picks: memorySearchResults.filter((r) => r.searchId === s.id).map(toPick),
+    }));
 }
 
 export async function getSearchWithResults(

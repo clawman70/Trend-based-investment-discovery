@@ -5,11 +5,13 @@
  *   rejects with 401. Pulls ~5 years of weekly closes and computes 1Y / 5Y price growth.
  *   Growth is null (never 0) when history is missing, so the UI can show "N/A".
  * - Company profile: description, sector, industry, CEO.
+ * - Track record (Phase D): SPY daily closes and per-ticker split events.
  *
  * Yahoo is unofficial and can break; every function degrades to null instead of throwing.
  */
 
 import YahooFinance from 'yahoo-finance2';
+import type { DailyClose, SplitEvent } from './trackRecord';
 
 export type GrowthSource = 'calculated' | 'insufficient_history' | 'unavailable';
 
@@ -186,5 +188,43 @@ export async function fetchPriceGrowth(ticker: string, currentPrice: number): Pr
   } catch (error) {
     console.warn(`[History] Yahoo chart failed for ${symbol}:`, error instanceof Error ? error.message : error);
     return { ticker: symbol, growth1Y: null, growth5Y: null, change6M: null, growthSource: 'unavailable' };
+  }
+}
+
+/**
+ * Daily closes for a symbol between two dates (track record: SPY's close on a search date).
+ *
+ * Checked against yahoo-finance2 4.0.2's chart() on 2026-11-17: `interval: '1d'` returns one
+ * bar per trading day, stamped at that day's 9:30 ET open (13:30 UTC in summer), with
+ * `close` = that day's close, not dividend-adjusted (price-only, which is what we want;
+ * `adjclose` would fold dividends in). Weekends and holidays simply have no bar.
+ * Returns null on failure so callers show N/A.
+ */
+export async function fetchDailyCloses(symbol: string, from: Date, to: Date = new Date()): Promise<DailyClose[] | null> {
+  try {
+    const result = await yahooFinance.chart(toYahooSymbol(symbol), { period1: from, period2: to, interval: '1d' });
+    return result.quotes
+      .filter((q) => typeof q.close === 'number' && q.close > 0)
+      .map((q) => ({ date: q.date, close: q.close as number }));
+  } catch (error) {
+    console.warn(`[Yahoo] Daily closes failed for ${symbol}:`, error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+/**
+ * Stock splits since `from` (track record: so a split doesn't show as a fake gain or loss).
+ * chart() includes split events by default; a monthly interval keeps the payload tiny and
+ * still returns each split's exact ex-date (checked live on NVDA's 2024-06-10 10:1 split).
+ * [] = checked, no splits. null = the check failed (Yahoo throws "No data found" for a
+ * delisted or unknown symbol); the caller then counts the pick as "split check unavailable".
+ */
+export async function fetchSplitEvents(symbol: string, from: Date): Promise<SplitEvent[] | null> {
+  try {
+    const result = await yahooFinance.chart(toYahooSymbol(symbol), { period1: from, interval: '1mo', events: 'split' });
+    return (result.events?.splits ?? []).map((s) => ({ date: s.date, numerator: s.numerator, denominator: s.denominator }));
+  } catch (error) {
+    console.warn(`[Yahoo] Split check failed for ${symbol}:`, error instanceof Error ? error.message : error);
+    return null;
   }
 }
