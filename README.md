@@ -123,6 +123,24 @@ The math is in `src/lib/trackRecord.ts` (unit-tested with fixed examples). Data 
 
 ---
 
+## Status bar, cached results and limits
+
+**Status bar.** The strip under the header shows real checks from `GET /api/status`, refreshed every 10 seconds while the tab is open:
+
+| Light | Meaning |
+|---|---|
+| Green | Postgres is saving your data and all three API keys are set. |
+| Amber | **Storage: memory — saved items will not survive a restart.** Postgres is down or not configured, so the watchlist, portfolios, history and research scans live only in the running server. Also amber if an API key is missing (shown as MISSING). |
+| Red | The status check itself failed: the server isn't answering. |
+
+It also shows whether the US ticker directory is loaded and today's estimated AI spend against your cap. The directory loads on the first discovery or research run, so "not loaded yet" on a fresh server is normal. Checked live 2026-11-17: stopping the Postgres container turned the light amber about 2 seconds later, and starting it again turned it green within a second.
+
+**Cached results and Refresh.** Discovery results are cached for 7 days per thesis and filter set, and Research scans for 7 days per domain set or prompt. When a result comes from the cache, a label says how old it is (for example "cached 2 days ago") with a **↻ Refresh** button. Refresh runs a brand-new AI search and replaces the cached copy. Results cached before November 17, 2026 say "age unknown" because their age was never recorded. Prices and fundamentals are always re-fetched; only the AI's company list or report is cached. A fresh discovery run uses Claude web search and can take several minutes (one run measured about 8 minutes), so the page shows an elapsed-time counter while it works.
+
+**Input limits.** At most 3 theses per run, 500 characters per thesis (the thesis boxes show a character count), and 50 distinct tickers per price-lookup request. Anything over a limit is rejected with a message that names the limit.
+
+---
+
 ## Setup
 
 ### 1. Install dependencies
@@ -156,17 +174,26 @@ npm run db:up       # starts Postgres via Docker Compose (Docker Desktop must be
 npm run db:migrate   # creates the tables
 ```
 
-Run `npm run db:migrate` again after pulling changes that add a migration. The November 2026 work added two: one makes the watchlist cost basis optional and turns any stored $0 cost basis into N/A; the other adds a column that saves the scoring weights with each history snapshot.
+Run `npm run db:migrate` again after pulling changes that add a migration. The November 2026 work added three: one makes the watchlist cost basis optional and turns any stored $0 cost basis into N/A; one adds a column that saves the scoring weights with each history snapshot; and one adds the `daily_spend` table for the AI spend total.
 
 `.env.example` already has the matching `POSTGRES_PRISMA_URL` / `POSTGRES_URL_NON_POOLING` for this local database — copy them into `.env.local` if you haven't already. **Docker Compose is local-dev only — it doesn't exist on Vercel.** For a production deploy, point those two variables at a real hosted Postgres instance (Vercel Postgres or [Neon](https://neon.tech) both work) and run `npm run db:deploy` once instead.
 
-**How the fallback works:** every request checks whether Postgres is reachable. If it is, data is read from and written to Postgres. If it isn't (no `POSTGRES_PRISMA_URL`, or the database is down), the app falls back to in-memory storage automatically — no errors, no restart needed, it just won't remember anything past the current server process. You'll see `[DB] Postgres unavailable, falling back to in-memory store` in the server log when this happens.
+**How the fallback works:** every request checks whether Postgres is reachable. If it is, data is read from and written to Postgres. If it isn't (no `POSTGRES_PRISMA_URL`, or the database is down), the app falls back to in-memory storage automatically — no errors, no restart needed, it just won't remember anything past the current server process. You'll see `[DB] Postgres unavailable, falling back to in-memory store` in the server log, and the status bar turns amber, when this happens.
 
 ### 4. (Optional) Password-protect the app
 Off by default. Set `APP_PASSWORD` in `.env.local` (and optionally `APP_USERNAME`, default `admin`) before deploying anywhere public — your browser will show a native login prompt for the whole app, API included.
 
 ### 5. (Optional) Set a daily AI spend cap
-Off by default (a $5/day cap otherwise). Every Claude and Gemini call is logged to a running daily total; once it crosses `DAILY_SPEND_CAP_USD`, a warning banner appears at the top of the app. It's a heads-up against a bug or runaway usage, not real billing data or a hard limit — AI calls keep working as normal past the cap.
+The cap defaults to $5 a day; set `DAILY_SPEND_CAP_USD` to change it. Every Claude and Gemini call adds its estimated cost to a running total for the day (UTC), which the status bar shows. Once the total crosses the cap, a warning banner appears. It's a heads-up against a bug or runaway usage, not real billing data or a hard limit — AI calls keep working as normal past the cap.
+
+**How the estimate is worked out** (`src/lib/usageTracker.ts`): each API response reports what it used, and the app multiplies that by the provider's published price for that model. It counts input and output tokens and Gemini "thinking" tokens, which are billed as output. It also counts Claude web searches ($10 per 1,000) and Gemini Google Search grounding ($14 per 1,000). Your first 5,000 grounded requests each month are free, but the app can't see your allowance, so it counts them all. Prices were checked against the providers' pricing pages on 2026-11-17:
+
+| Model | Input / output per million tokens |
+|---|---|
+| `claude-sonnet-5` (default) | $2 / $10 |
+| `gemini-3.8-flash` (default) | $0.75 / $3.75 through 2026-12-31, then $1.50 / $7.50 (switches automatically) |
+
+Other current Claude and Gemini models are listed in the code. A model that isn't listed, such as a new `CLAUDE_MODEL`, is priced at the most expensive listed rate so the estimate errs high, and the server log shows a warning. The total is kept in its own database table, and each call adds to it in one step, so simultaneous AI calls can't overwrite each other. If Postgres is down, calls are added to an in-memory total that is lost on restart.
 
 ### 6. Run
 ```bash
@@ -217,6 +244,7 @@ The tests mock every external API and the database, so they run offline and cost
 │   │   │   ├── peers/                 # Finnhub peer comparison
 │   │   │   ├── research/              # Gemini research scans (Google Search grounding); research/load logs + links loaded theses
 │   │   │   ├── scorecard/             # Track record: picks vs SPY since each saved search
+│   │   │   ├── status/                # Status bar: storage mode, API keys set, ticker directory, spend
 │   │   │   ├── usage/today/           # Today's estimated AI spend + daily cap status
 │   │   │   └── watchlist/ portfolios/ history/   # Saved items (Postgres, falls back to memory)
 │   │   └── page.tsx                   # Main dashboard
@@ -233,7 +261,9 @@ The tests mock every external API and the database, so they run offline and cost
 │       ├── researchVerification.ts    # Research-tab ticker check, real market-cap tier, rally check
 │       ├── claudeService.ts           # Claude: discovery, trend analysis, sentiment, value-chain
 │       ├── geminiService.ts           # Gemini: Research tab only, Google Search grounding
-│       ├── usageTracker.ts            # Daily AI spend estimate + cap check (DAILY_SPEND_CAP_USD)
+│       ├── usageTracker.ts            # Daily AI spend: per-model price table, atomic daily total, cap check
+│       ├── inputLimits.ts             # Request limits: 3 theses, 500 characters, 50 tickers
+│       ├── cacheAge.ts                # "cached N days ago" label and elapsed-time formatting
 │       ├── demoData.ts                # DEMO_MODE placeholder fixtures (labeled)
 │       ├── scoring.ts                 # Composite score: 5 factors, rank scaling, breakdown (runs in the browser)
 │       ├── prisma.ts                  # Prisma client (Postgres, driver adapter)
