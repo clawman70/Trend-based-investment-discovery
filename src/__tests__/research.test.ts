@@ -59,6 +59,28 @@ describe('Phase 5 — Automated Research Engine Tests', () => {
       expect(memoryResearchScans.length).toBe(0);
     });
 
+    it('runs every mentioned company through the ticker check before returning (bug B5)', async () => {
+      const savedKey = process.env.FINNHUB_API_KEY;
+      delete process.env.FINNHUB_API_KEY; // no directory available offline -> nothing can be verified
+      vi.mocked(geminiService.generateTrendResearchReport).mockResolvedValue({
+        isDemo: false,
+        executiveSummary: 'S',
+        scanDate: '2026-11-17',
+        domainsScanned: ['AI'],
+        candidateTheses: [],
+        companiesMentioned: [{ name: 'Fake Co', ticker: 'FAKEQ', marketCapTier: 'small', context: '', recentRally: null }],
+        adjacentSignals: [],
+      });
+      try {
+        const json = await (await scan({ domains: ['AI'], mode: 'guided', customPrompt: null })).json();
+        expect(json.companiesMentioned[0].tickerStatus).toBe('unverified');
+        expect(json.companiesMentioned[0].recentRally).toBeNull();
+        expect(json.companiesMentioned[0].marketCapTierSource).toBe('ai_estimate');
+      } finally {
+        if (savedKey !== undefined) process.env.FINNHUB_API_KEY = savedKey;
+      }
+    });
+
     it('should return 502 (not a mock report) when the AI call fails', async () => {
       vi.mocked(geminiService.generateTrendResearchReport).mockRejectedValue(new Error('Gemini 500'));
 

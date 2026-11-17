@@ -61,30 +61,54 @@ export interface SortConfig {
   direction: 'ascending' | 'descending';
 }
 
+// Research report types. Every fixed-list field also allows 'unknown': Gemini's JSON is
+// validated with Zod (src/lib/researchSchema.ts) and an off-list value is coerced to
+// 'unknown' instead of rendering a broken badge (bug B10).
+
 export interface Source {
   title: string;
   url: string;
   date: string;
-  sourceType: 'research_paper' | 'news' | 'social' | 'video' | 'patent' | 'government';
+  sourceType: 'research_paper' | 'news' | 'social' | 'video' | 'patent' | 'government' | 'unknown';
 }
 
 export interface CandidateThesis {
   thesisStatement: string;
-  convergenceType: 'demand_supply' | 'parallel_growth' | 'regulatory_catalyst' | 'technology_enablement';
+  convergenceType: 'demand_supply' | 'parallel_growth' | 'regulatory_catalyst' | 'technology_enablement' | 'unknown';
   domainsInvolved: string[];
   recencySignal: string;
-  maturity: 'Nascent' | 'Pre-emergence' | 'Early emergence';
-  confidence: 'High' | 'Medium' | 'Speculative';
+  maturity: 'Nascent' | 'Pre-emergence' | 'Early emergence' | 'unknown';
+  confidence: 'High' | 'Medium' | 'Speculative' | 'unknown';
   rationale: string;
   sources: Source[];
 }
 
+export type MentionedMarketCapTier = 'micro' | 'small' | 'mid' | 'large' | 'unknown';
+
+/** Why a Research-tab company's ticker couldn't be trusted (bug B5). */
+export type TickerUnverifiedReason =
+  | 'not_listed' // not a major-US-exchange listing in the Finnhub directory (private, foreign, OTC, made up)
+  | 'name_mismatch' // the ticker IS listed, but to a company whose name doesn't match the one Gemini gave
+  | 'directory_unavailable'; // the listing directory couldn't be loaded, so nothing could be checked
+
 export interface MentionedCompany {
   name: string;
   ticker: string;
-  marketCapTier: 'micro' | 'small' | 'mid' | 'large';
+  /** Computed from the real Finnhub market cap when marketCapTierSource is 'finnhub'; otherwise Gemini's guess. */
+  marketCapTier: MentionedMarketCapTier;
   context: string;
   recentRally: boolean | null; // computed from real price history, not an AI guess; null = couldn't verify
+  /**
+   * 'verified' = the ticker is a listed US security whose official name matches. Only
+   * verified companies get a rally check and a real market-cap tier. Optional because
+   * scans cached before this check existed don't have it — treat missing as unverified.
+   */
+  tickerStatus?: 'verified' | 'unverified';
+  unverifiedReason?: TickerUnverifiedReason;
+  /** The official name from the listing directory, when the ticker was found. */
+  listingName?: string | null;
+  /** Where marketCapTier came from. Missing (older scans) = treat as an AI estimate. */
+  marketCapTierSource?: 'finnhub' | 'ai_estimate';
 }
 
 export interface TrendResearchReport {
