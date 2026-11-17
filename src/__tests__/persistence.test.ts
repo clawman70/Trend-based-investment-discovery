@@ -184,6 +184,8 @@ describe('Phase 3 — Persistence Layer Tests', () => {
     it('should CRUD watchlisted tickers and evaluate gains relative to cost', async () => {
       // Mock Finnhub live quotes
       vi.mocked(finnhubService.fetchQuotes).mockResolvedValue(quotes({ AAPL: 180.0 }));
+      // The cost basis is the server-side quote at starring time ($100), not the browser's price
+      vi.mocked(finnhubService.fetchQuote).mockReset().mockResolvedValue({ c: 100.0 } as FinnhubQuote);
 
       // 1. Add asset to watchlist (cost basis $100.0)
       const postRequest = new NextRequest('http://localhost:3000/api/watchlist', {
@@ -191,7 +193,7 @@ describe('Phase 3 — Persistence Layer Tests', () => {
         body: JSON.stringify({
           ticker: 'AAPL',
           companyName: 'Apple Inc.',
-          priceAtAdd: 100.0,
+          priceAtAdd: 95.0, // stale browser price: ignored
           notes: 'Init rationale',
           tags: ['Hardware'],
         }),
@@ -313,11 +315,19 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       expect(memoryWatchlistItems.find((i) => i.ticker === 'MSFT')?.priceAtAdd).toBe(42.5);
     });
 
-    it('does not call Finnhub when the browser already sent a real price', async () => {
-      vi.mocked(finnhubService.fetchQuote).mockClear();
+    it('always uses a fresh server-side quote, never the browser’s possibly stale price (review finding)', async () => {
+      // The browser's price can be hours or days old, while "vs SPY" starts from the
+      // starring time: the two must describe the same moment
+      vi.mocked(finnhubService.fetchQuote).mockReset().mockResolvedValue({ c: 42.5 } as FinnhubQuote);
       await star({ ticker: 'AAPL', companyName: 'Apple Inc.', priceAtAdd: 100 });
-      expect(finnhubService.fetchQuote).not.toHaveBeenCalled();
-      expect(memoryWatchlistItems[0].priceAtAdd).toBe(100);
+      expect(finnhubService.fetchQuote).toHaveBeenCalledWith('AAPL');
+      expect(memoryWatchlistItems[0].priceAtAdd).toBe(42.5);
+    });
+
+    it('stores N/A, not the browser’s price, when no quote is available', async () => {
+      vi.mocked(finnhubService.fetchQuote).mockReset().mockResolvedValue(null);
+      await star({ ticker: 'AAPL', companyName: 'Apple Inc.', priceAtAdd: 100 });
+      expect(memoryWatchlistItems[0].priceAtAdd).toBeNull();
     });
 
     it('stores null (never 0) when the quote also fails, and gain/loss shows as N/A', async () => {

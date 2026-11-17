@@ -5,15 +5,14 @@ import { compareWithBenchmark } from '@/lib/benchmark';
 import { BENCHMARK_TICKER } from '@/lib/trackRecord';
 
 /**
- * Cost basis for a newly starred ticker (bug B8). Uses the browser's price when it's a
- * real positive number. Otherwise fetches a live quote here. If that also fails, returns
- * null — stored as "no cost basis" and shown as N/A, never 0 (0 used to blank the
- * gain/loss forever).
+ * Cost basis for a newly starred ticker: ALWAYS a fresh quote fetched here, at the moment
+ * of starring. The browser's price is ignored, because it can be hours or days old (a long
+ * open tab, or a search restored from History), while "vs SPY" measures from the starring
+ * date; both must describe the same moment (Phase D review fix).
+ * If no quote is available, returns null: stored as "no cost basis" and shown as N/A,
+ * never 0 (bug B8: 0 used to blank the gain/loss forever).
  */
-async function resolveCostBasis(ticker: string, clientPrice: unknown): Promise<number | null> {
-  if (typeof clientPrice === 'number' && Number.isFinite(clientPrice) && clientPrice > 0) {
-    return clientPrice;
-  }
+async function resolveCostBasis(ticker: string): Promise<number | null> {
   if (!isFinnhubConfigured()) return null;
   try {
     const quote = await fetchQuote(ticker);
@@ -79,10 +78,11 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { ticker, companyName, priceAtAdd, sourceSearchId, notes, tags } = body as {
+    // Any priceAtAdd the browser still sends is ignored: the cost basis is always a fresh
+    // server-side quote (see resolveCostBasis)
+    const { ticker, companyName, sourceSearchId, notes, tags } = body as {
       ticker: string;
       companyName: string;
-      priceAtAdd?: number | null; // optional: missing/0 triggers a server-side quote
       sourceSearchId?: string;
       notes?: string;
       tags?: string[];
@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
     const newItem = await upsertWatchlistItem({
       ticker: cleanTicker,
       companyName,
-      priceAtAdd: await resolveCostBasis(cleanTicker, priceAtAdd),
+      priceAtAdd: await resolveCostBasis(cleanTicker),
       sourceSearchId: sourceSearchId || null,
       notes: notes || null,
       tags: tags || [],
