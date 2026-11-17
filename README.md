@@ -8,6 +8,7 @@ A Bloomberg-style research terminal. You describe a market trend in plain Englis
 4. **Validates** every AI-suggested ticker against real US exchange listings and drops anything unlisted.
 5. **Enriches** the survivors with live price, market cap, P/E, price-to-sales, revenue growth, debt-to-equity, 1Y/5Y price growth and the 6-month price change.
 6. **Scores** and ranks them (see [How the score works](#how-the-score-works)), and lets you save them to a watchlist and portfolios.
+7. **Tracks the record** (see [Scorecard](#scorecard-does-the-tool-actually-work)): how every saved search's picks have done since, compared with the S&P 500 (SPY).
 
 > **Data integrity rule:** every number on screen is real or shown as **N/A**. The app never fills gaps with made-up values. Placeholder data exists only when you explicitly turn on `DEMO_MODE`, and it is labeled **DEMO** everywhere it appears.
 
@@ -32,6 +33,9 @@ A Bloomberg-style research terminal. You describe a market trend in plain Englis
 | Research-tab ticker check | Finnhub symbol directory (same one the Discovery gate uses) | Every company Gemini names is checked before its ticker is used. If the ticker isn't a listed US security, or it belongs to a company with a clearly different name, the row is marked **UNVERIFIED** with the reason, and it gets no rally value. See `src/lib/researchVerification.ts`. |
 | Research-tab market-cap tier | Real Finnhub market cap for verified tickers | Recomputed from real data (same micro/small/mid/large cutoffs as Discovery). When Finnhub has no market cap, or the ticker is unverified, the tier is Gemini's guess and is labeled **AI estimate** under the badge. |
 | "6M Rally >30%" on Research-tab companies | Computed from real Finnhub price + Yahoo 6-month history | Never an AI guess. Only computed for **verified** tickers; **N/A** for unverified tickers or when price history is unavailable. See `fetchSixMonthRally` in `src/lib/yahooService.ts`. |
+| Scorecard and "vs SPY": today's prices | Finnhub `/quote` (free), including SPY | One call per unique ticker per load, cached 5 minutes (same cache as Discovery). |
+| Scorecard and "vs SPY": SPY's close on a past date | Yahoo Finance daily history | Price only (not dividend-adjusted). Cached permanently once the day's close is final, since the past doesn't change. |
+| Scorecard: stock splits since the search | Yahoo Finance split events | Cached 24 hours per ticker. |
 
 **Research report validation:** Gemini's structured report is checked with a schema (`src/lib/researchSchema.ts`) instead of being trusted. A label outside the allowed list (maturity, confidence, convergence type, source type, market-cap tier) is shown as "unknown" rather than breaking the page. If the report itself is broken (not valid JSON, no summary, no list of theses, a thesis with no statement), the scan fails with a clear "Research scan failed" message instead of showing a partial report.
 
@@ -40,6 +44,9 @@ A Bloomberg-style research terminal. You describe a market trend in plain Englis
 **Watchlist:**
 - Starring a company saves why it was picked as the note. With several theses, each reason is labeled with its thesis.
 - The cost basis is the price on the day you starred it. If the price didn't load in the browser, the server fetches a live quote. If that also fails, the cost basis is saved as **N/A**, not $0, and gain/loss shows N/A. Portfolio totals leave those items out.
+- Starring from a search restored out of History uses **today's** price as the cost basis, not the old search-date price (that price belongs to the search, and the Scorecard already tracks it).
+- Each starred company remembers which saved search it came from.
+- **vs SPY column** (Watchlist and Portfolios): the item's gain/loss minus what SPY did over the same window, from SPY's close on the day you starred it to now. Shown in "pts" (percentage points). Hover it to see SPY's own return. N/A when there's no cost basis, no price today, or no SPY close for that date. Unlike the Scorecard, the Watchlist does not adjust for stock splits.
 
 **Finnhub free-tier budget:** 60 calls/minute. All Finnhub calls share one rate limiter (capped at 55/min), so a big discovery run (25+ companies) may pause briefly instead of failing.
 
@@ -75,6 +82,45 @@ The defaults come from the original v2 requirements. Drag the sliders to change 
 **Saved searches re-score the same way.** Each history snapshot stores the weights and the number of theses that ran. Restoring it puts the sliders back where they were and reproduces the same scores. Searches saved before this change (November 2026) have no saved weights: they're re-scored with your current sliders, and the data they never stored (P/S, revenue growth) shows as missing.
 
 The code is in `src/lib/scoring.ts`; the breakdown panel is `src/components/ScoreBreakdownPanel.tsx`.
+
+---
+
+## Scorecard: does the tool actually work?
+
+The **SCORECARD** tab answers one question: since each saved search, did its picks beat the market? "The market" is **SPY**, the S&P 500 ETF. Every Discovery run is saved automatically, so the scorecard fills itself in over time. It makes no AI calls.
+
+**What each search shows**
+
+| Number | What it means |
+|---|---|
+| Avg pick return | How much the average pick's price moved since the search. Every pick counts equally. |
+| SPY same window | How much SPY moved over the same days. |
+| Difference vs SPY | Pick return minus SPY's return, in **pts** (percentage points). Positive = the picks beat the market. |
+| Hit rate | Share of picks that beat SPY. A pick within 0.01 pts of SPY is a tie, not a hit. |
+
+Click **SHOW PICKS** on a search to see every pick: its price at the search, its price now, its return and its difference vs SPY.
+
+**Overall** rolls up every search that is at least 30 days old and shows the same four numbers. It also shows **top-scored half vs bottom-scored half**, which tests whether the score predicts anything. If the top half keeps beating the bottom half, the score is doing its job. If not, it isn't. Scores only rank companies *within* one search, so each search is split into halves first and the halves are then pooled. Scores are never compared across searches. With an odd number of picks, the middle one is left out so the halves are equal.
+
+**Honesty rules**
+
+- **Too early to read.** Any figure covering fewer than 30 days or fewer than 10 picks gets an amber **TOO EARLY TO READ** label, with the reason. A few weeks of price moves is noise, not a verdict. Every figure shows how many picks and days it covers.
+- **Searches under 30 days old are left out of Overall.** They still appear in the list, marked "Not in overall". Otherwise a search from yesterday would drag every average toward zero.
+- **Excluded, not guessed.** A pick with no price saved at search time is left out and counted. So is a pick with no price today, which usually means it was delisted or renamed. A delisted stock may have gone to zero or been bought out, and the app can't know which. That means the figures can look somewhat better than reality, and the page says so.
+- **Price return only.** Dividends aren't included, for the picks or for SPY.
+- **Stock splits are adjusted.** If a pick splits after the search (common with micro-cap reverse splits), its old price is converted to today's shares so the split doesn't show as a fake gain or loss. If the split check fails, the pick is still counted unadjusted and labeled "split check unavailable".
+- **Not investment advice.** It's a record of past prices.
+
+**Which SPY price a search starts from.** The day the search ran, using SPY's closing price.
+- **Weekend or market holiday:** the nearest earlier trading day's close (a Saturday search starts from Friday's close).
+- **Before the 9:30am ET open:** the previous trading day's close, because that's the price the picks were saved at.
+- **Today, before the 4:30pm ET close is final:** SPY shows N/A until the close is in.
+
+The pick's own start price is the one saved with the search. A search run during market hours is compared with that day's close, which is a small mismatch; on average it's the closest match available from daily data.
+
+**Cost per load:** one Finnhub price check per unique ticker across all searches (shared with the 5-minute price cache), one Yahoo history request for any SPY dates not already cached, and one Yahoo split check per ticker per day.
+
+The math is in `src/lib/trackRecord.ts` (unit-tested with fixed examples). Data fetching and caching are in `src/lib/benchmark.ts`, the endpoint is `GET /api/scorecard`, and the page is `src/components/ScorecardView.tsx`.
 
 ---
 
@@ -170,14 +216,17 @@ The tests mock every external API and the database, so they run offline and cost
 │   │   │   ├── company-details/       # Details window: profile + fundamentals + AI value chain
 │   │   │   ├── news/                  # Finnhub headlines + Claude sentiment
 │   │   │   ├── peers/                 # Finnhub peer comparison
-│   │   │   ├── research/              # Gemini research scans (Google Search grounding)
+│   │   │   ├── research/              # Gemini research scans (Google Search grounding); research/load logs + links loaded theses
+│   │   │   ├── scorecard/             # Track record: picks vs SPY since each saved search
 │   │   │   ├── usage/today/           # Today's estimated AI spend + daily cap status
 │   │   │   └── watchlist/ portfolios/ history/   # Saved items (Postgres, falls back to memory)
 │   │   └── page.tsx                   # Main dashboard
-│   ├── components/                    # UI (ResultsTable, ScoreBreakdownPanel, ScoringSliders, DetailsModal, ...)
+│   ├── components/                    # UI (ResultsTable, ScoreBreakdownPanel, ScoringSliders, ScorecardView, DetailsModal, ...)
 │   └── lib/
 │       ├── finnhubService.ts          # Rate-limited Finnhub client + metric normalization
-│       ├── yahooService.ts            # Yahoo price history + company profile
+│       ├── yahooService.ts            # Yahoo price history, company profile, SPY daily closes, split events
+│       ├── trackRecord.ts             # Scorecard math: returns vs SPY, hit rate, halves, "too early" rule (pure, unit-tested)
+│       ├── benchmark.ts               # Scorecard data: one quote per ticker, cached SPY closes, split checks, "vs SPY" helper
 │       ├── tickerValidator.ts         # Hallucination gate (Finnhub symbol directory)
 │       ├── resultFilters.ts           # Real market-cap + exchange enforcement (post-enrichment)
 │       ├── rationale.ts               # Builds the watchlist/history note from per-thesis rationales
@@ -204,5 +253,7 @@ The tests mock every external API and the database, so they run offline and cost
 See `Documents/Improvement-Plan-2026-11.md` for the current roadmap (`Improvement-Plan-2026-09.md` is the record of the earlier phases).
 
 - **The app password gate is a deterrent, not compliance-grade auth.** No rate limiting, no audit log, no per-user accounts — fine for a personal tool, not for anything handling other people's data.
-- **The score ranks within one result set.** A 70 in one search and a 70 in another aren't directly comparable: valuation, health and growth are ranked against the other companies in that same search. Phase D (track record) is what will test whether high scores actually predict better returns.
+- **The score ranks within one result set.** A 70 in one search and a 70 in another aren't directly comparable: valuation, health and growth are ranked against the other companies in that same search. The Scorecard's top-half vs bottom-half comparison tests whether high scores predict better returns; it needs more searches that are 30+ days old before it means much.
+- **The Scorecard has some survivorship bias.** Picks with no price today (usually delisted) are excluded, not counted as losses, because the app can't tell a bankruptcy from a buyout.
+- **The Watchlist and Portfolio "vs SPY" columns don't adjust for stock splits.** The Scorecard does. A split after you star a company will distort that item's gain/loss and vs SPY.
 - **Portfolio→watchlist links have a real foreign key on the portfolio side only.** Deleting a watchlist item that's linked to a portfolio never fails, it just quietly drops from that portfolio's view — same behavior with or without Postgres.
