@@ -122,12 +122,72 @@ describe('Phase 2 — Intelligence Layer Tests', () => {
     });
   });
 
+  describe('Partial thesis failure in POST /api/discover (bug B4)', () => {
+    it('reports the failed thesis and computes convergence over the theses that succeeded', async () => {
+      vi.mocked(claudeService.discoverCompaniesFromAI)
+        .mockImplementationOnce(async () => [
+          { ticker: 'AAPL', companyName: 'Apple Inc.', rationale: 'Fits 1', relevanceScore: 8 },
+        ])
+        .mockImplementationOnce(async () => [
+          { ticker: 'AAPL', companyName: 'Apple Inc.', rationale: 'Fits 2', relevanceScore: 8 },
+          { ticker: 'MSFT', companyName: 'Microsoft Corp.', rationale: 'Fits 2 only', relevanceScore: 7 },
+        ])
+        .mockImplementationOnce(async () => {
+          throw new Error('Claude overloaded');
+        });
+      vi.mocked(tickerValidator.validateTickers).mockResolvedValue({ valid: ['AAPL', 'MSFT'], invalid: [], bypassed: false });
+
+      const response = await discoverPOST(
+        new NextRequest('http://localhost:3000/api/discover', {
+          method: 'POST',
+          body: JSON.stringify({ trends: ['One', 'Two', 'Three'], filters: { exchange: [], marketCap: [] } }),
+        })
+      );
+      expect(response.status).toBe(200);
+      const json = await response.json();
+      expect(json.failedTrends).toEqual(['Three']);
+      const companies = json.companies as ScoredCompanyData[];
+      // AAPL matched both theses that ran: 2 of 2, not 2 of 3
+      expect(companies.find((c) => c.ticker === 'AAPL')?.convergenceScore).toBe(1);
+      expect(companies.find((c) => c.ticker === 'MSFT')?.convergenceScore).toBe(0.5);
+    });
+
+    it('returns an empty failedTrends list when every thesis succeeds', async () => {
+      vi.mocked(claudeService.discoverCompaniesFromAI).mockResolvedValue([
+        { ticker: 'AAPL', companyName: 'Apple Inc.', rationale: 'Fits', relevanceScore: 8 },
+      ]);
+      vi.mocked(tickerValidator.validateTickers).mockResolvedValue({ valid: ['AAPL'], invalid: [], bypassed: false });
+      const response = await discoverPOST(
+        new NextRequest('http://localhost:3000/api/discover', {
+          method: 'POST',
+          body: JSON.stringify({ trends: ['One', 'Two'], filters: { exchange: [], marketCap: [] } }),
+        })
+      );
+      const json = await response.json();
+      expect(json.failedTrends).toEqual([]);
+    });
+
+    it('fails the request with a clear error naming the theses when all of them fail', async () => {
+      vi.mocked(claudeService.discoverCompaniesFromAI).mockRejectedValue(new Error('down'));
+      const response = await discoverPOST(
+        new NextRequest('http://localhost:3000/api/discover', {
+          method: 'POST',
+          body: JSON.stringify({ trends: ['One', 'Two'], filters: { exchange: [], marketCap: [] } }),
+        })
+      );
+      expect(response.status).toBe(502);
+      const json = await response.json();
+      expect(json.error).toContain('"One"');
+      expect(json.error).toContain('"Two"');
+      expect(json.failedTrends).toEqual(['One', 'Two']);
+    });
+  });
+
   describe('Composite Scoring (calculateCompanyScores)', () => {
     const mockCompanies: ScoredCompanyData[] = [
       {
         ticker: 'GROW',
         companyName: 'Growth Play',
-        rationale: 'R1',
         relevanceScore: 10,
         trendsMatched: ['T1', 'T2'],
         convergenceScore: 1.0,
@@ -147,7 +207,6 @@ describe('Phase 2 — Intelligence Layer Tests', () => {
       {
         ticker: 'VALU',
         companyName: 'Value Play',
-        rationale: 'R2',
         relevanceScore: 7,
         trendsMatched: ['T1'],
         convergenceScore: 0.5,

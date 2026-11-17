@@ -46,7 +46,6 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       const mockResult: ScoredCompanyData = {
         ticker: 'MSFT',
         companyName: 'Microsoft Corp.',
-        rationale: 'Office AI integration',
         relevanceScore: 9,
         trendsMatched: ['AI Tools'],
         convergenceScore: 1.0,
@@ -98,6 +97,9 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       expect(getSingleJson.search.id).toBe(savedSearchId);
       expect(getSingleJson.companies.length).toBe(1);
       expect(getSingleJson.companies[0].ticker).toBe('MSFT');
+      // Bug B1: the saved row's rationale is built from the per-thesis map, not left empty
+      expect(memorySearchResults[0].rationale).toBe('Office AI integration');
+      expect(getSingleJson.companies[0].rationales).toEqual({ 'AI Tools': 'Office AI integration' });
 
       // 4. Delete the search
       const deleteRequest = new NextRequest(`http://localhost:3000/api/history?id=${savedSearchId}`, {

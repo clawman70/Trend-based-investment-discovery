@@ -16,7 +16,8 @@ import { ResearchReport } from '@/components/ResearchReport';
 import { SpendCapBanner } from '@/components/SpendCapBanner';
 import { ScoredCompanyData, Filters, TrendAnalysis, TrendResearchReport } from '@/lib/types';
 import { calculateCompanyScores } from '@/lib/scoring';
-import { passesMarketCapFilter } from '@/lib/marketCapFilter';
+import { applyRealDataFilters } from '@/lib/resultFilters';
+import { buildRationaleNote } from '@/lib/rationale';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<string>('research');
@@ -42,6 +43,8 @@ export default function Home() {
   const [results, setResults] = useState<ScoredCompanyData[]>([]);
   const [invalidTickers, setInvalidTickers] = useState<string[]>([]);
   const [validationBypassed, setValidationBypassed] = useState<boolean>(false);
+  // Theses whose discovery call failed in a multi-thesis run (bug B4) — shown as a warning
+  const [failedTrends, setFailedTrends] = useState<string[]>([]);
   
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isDiscovering, setIsDiscovering] = useState<boolean>(false);
@@ -91,8 +94,11 @@ export default function Home() {
           body: JSON.stringify({
             ticker: company.ticker,
             companyName: company.companyName,
-            priceAtAdd: company.stockPrice || 0,
-            notes: company.rationale,
+            // Only send a real price. If it's missing (0), the watchlist route fetches a
+            // live quote itself, and stores N/A if that also fails (bug B8).
+            priceAtAdd: company.stockPrice > 0 ? company.stockPrice : null,
+            // Built from the per-thesis rationale map (bug B1: used to read a field that was never set)
+            notes: buildRationaleNote(company.rationales),
             tags: company.trendsMatched || [],
           }),
         });
@@ -125,6 +131,7 @@ export default function Home() {
       setResults(data.companies || []);
       setInvalidTickers([]);
       setValidationBypassed(false);
+      setFailedTrends([]);
       setShowDiscoverButton(true);
       setLoadingStep('completed');
       setActiveTab('discover');
@@ -196,6 +203,7 @@ export default function Home() {
     setError(null);
     setResults([]);
     setInvalidTickers([]);
+    setFailedTrends([]);
 
     try {
       // 1. Scan market for companies matching active trends
@@ -213,6 +221,7 @@ export default function Home() {
       const discoverData = (await discoverResponse.json()) as {
         companies: ScoredCompanyData[];
         invalidTickers: string[];
+        failedTrends?: string[];
         validationMetrics?: { validationBypassed?: boolean };
       };
       
@@ -221,6 +230,7 @@ export default function Home() {
       
       setInvalidTickers(droppedTickers);
       setValidationBypassed(!!discoverData.validationMetrics?.validationBypassed);
+      setFailedTrends(discoverData.failedTrends || []);
 
       if (discovered.length === 0) {
         setError('No valid companies matched your filters. Try broadening your criteria or revising your theses.');
@@ -267,13 +277,14 @@ export default function Home() {
         };
       });
 
-      // 3b. Enforce the market-cap filter against real (enriched) data — the AI only
-      // sees it as a text hint, so a company whose actual market cap doesn't fit the
-      // requested tier gets dropped here rather than trusted from the model's guess.
-      const capFilteredResults = mergedResults.filter((c) => passesMarketCapFilter(c.marketCap, filters.marketCap));
+      // 3b. Enforce the market-cap AND exchange filters against real (enriched) data — the
+      // AI only sees them as text hints, so a company whose actual market cap or listing
+      // exchange doesn't fit gets dropped here rather than trusted from the model's answer.
+      // Unknown values are kept (see src/lib/resultFilters.ts).
+      const capFilteredResults = applyRealDataFilters(mergedResults, filters);
 
       if (capFilteredResults.length === 0) {
-        setError('No companies matched your filters after checking real market cap data. Try broadening your market-cap selection.');
+        setError('No companies matched your filters after checking real market cap and exchange data. Try broadening your market-cap or exchange selection.');
         setLoadingStep('idle');
         setIsDiscovering(false);
         return;
@@ -465,8 +476,8 @@ export default function Home() {
             )}
 
             {/* Invalid Ticker Alerts */}
-            {!isLoading && (invalidTickers.length > 0 || validationBypassed) && (
-              <ValidationAlerts invalidTickers={invalidTickers} bypassed={validationBypassed} />
+            {!isLoading && (invalidTickers.length > 0 || validationBypassed || failedTrends.length > 0) && (
+              <ValidationAlerts invalidTickers={invalidTickers} bypassed={validationBypassed} failedTrends={failedTrends} />
             )}
 
             {/* Matrix Result & Weight Slider Dashboard */}

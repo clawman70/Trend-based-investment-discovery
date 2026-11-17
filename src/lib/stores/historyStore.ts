@@ -8,6 +8,7 @@ import { isDbAvailable } from '../dbHelper';
 import { prisma } from '../prisma';
 import { memorySearches, memorySearchResults, MemorySearch, MemorySearchResult } from '../memoryStore';
 import { ScoredCompanyData } from '../types';
+import { buildRationaleNote } from '../rationale';
 
 export interface SearchSummary {
   id: string;
@@ -37,7 +38,6 @@ function toScoredCompanyData(row: SearchResultRow): ScoredCompanyData {
   return {
     ticker: row.ticker,
     companyName: row.companyName,
-    rationale: row.rationale,
     trendsMatched: Array.isArray(row.trendMatched) ? row.trendMatched : [],
     convergenceScore: row.convergenceScore ?? 0,
     compositeScore: row.compositeScore ?? 0,
@@ -90,7 +90,8 @@ export async function createSearch(input: {
   const resultRows: SearchResultRow[] = input.results.map((r) => ({
     ticker: r.ticker,
     companyName: r.companyName,
-    rationale: r.rationale || '',
+    // Joined from the per-thesis map (bug B1: used to read a field that was never set, so always '')
+    rationale: buildRationaleNote(r.rationales),
     trendMatched: r.trendsMatched || [],
     financialData: {
       stockPrice: r.stockPrice,

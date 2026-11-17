@@ -20,7 +20,14 @@ export interface DataQuality {
   fundamentalsSource?: 'live' | 'unavailable';
 }
 
-export interface CompanyData extends DiscoveredCompany {
+/**
+ * A company after discovery. The single per-thesis `rationale` from Claude is NOT carried
+ * here: the discover route merges per-thesis results into `rationales` (on
+ * ScoredCompanyData). Where one string is needed (watchlist note, history row), build it
+ * with `buildRationaleNote()` in src/lib/rationale.ts. (Bug B1: a required-but-never-set
+ * `rationale` field here made those notes silently empty.)
+ */
+export interface CompanyData extends Omit<DiscoveredCompany, 'rationale'> {
   stockPrice: number; // 0 = unavailable
   marketCap: number; // 0 = unavailable
   exchange: Exchange | null; // null = unknown
