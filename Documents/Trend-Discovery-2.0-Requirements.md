@@ -9,7 +9,7 @@
 > - **Auth:** "None" no longer holds. An optional password gate (`APP_PASSWORD`) now covers the whole app, API included.
 > - **Docker:** "No Docker" no longer holds. Local Postgres runs in **Docker Compose** (`npm run db:up`); without it the app falls back to in-memory storage.
 > - **Removed endpoints:** `/api/validate-ticker` and `/api/score` were built and later deleted (November 2026) because nothing in the UI called them. Ticker validation happens inside `/api/discover`; scoring happens in the browser (`src/lib/scoring.ts`).
-> - **Growth factor:** the 20% growth factor in the scoring section was never built. It is planned in `Improvement-Plan-2026-11.md` (Phase C).
+> - **Scoring (Phase C, November 2026):** the growth factor was built as **revenue** growth (not price growth, which is never scored), valuation uses price-to-sales instead of P/E, and the overlap factor is switched off for single-thesis runs. See "How the score works" in the README.
 
 ## Project Overview
 
