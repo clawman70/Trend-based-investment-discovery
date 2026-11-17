@@ -2,39 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createScan, findCachedScan } from '@/lib/stores/researchStore';
 import { generateTrendResearchReport } from '@/lib/geminiService';
 import { getDemoResearchReport, isDemoMode } from '@/lib/demoData';
-import { fetchQuote, isFinnhubConfigured } from '@/lib/finnhubService';
-import { fetchSixMonthRally } from '@/lib/yahooService';
-import { MentionedCompany, TrendResearchReport } from '@/lib/types';
+import { verifyMentionedCompanies } from '@/lib/researchVerification';
+import { TrendResearchReport } from '@/lib/types';
 
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-
-/**
- * Replaces the model's job of guessing recentRally with a real check: live price from
- * Finnhub, 6-month history from Yahoo. Stays null (not false) when the ticker isn't a
- * real, currently-quotable security (e.g. a private company) or data is unavailable —
- * never guess.
- */
-async function attachRealRecentRally(companies: MentionedCompany[]): Promise<MentionedCompany[]> {
-  if (!isFinnhubConfigured() || companies.length === 0) {
-    return companies;
-  }
-
-  return Promise.all(
-    companies.map(async (company) => {
-      try {
-        const quote = await fetchQuote(company.ticker);
-        if (!quote || !(quote.c > 0)) {
-          return company;
-        }
-        const rally = await fetchSixMonthRally(company.ticker, quote.c);
-        return { ...company, recentRally: rally.rallied };
-      } catch (err) {
-        console.warn(`[Research] Could not compute real recentRally for ${company.ticker}:`, err instanceof Error ? err.message : err);
-        return company;
-      }
-    })
-  );
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -48,7 +19,13 @@ export async function POST(request: NextRequest) {
     if (!forceRefresh) {
       const cachedScan = await findCachedScan({ mode, sortedDomains, customPrompt: cleanPrompt });
       if (cachedScan) {
-        return NextResponse.json({ scanId: cachedScan.id, ...cachedScan.report });
+        // fromCache / cachedAt drive the "cached N days ago" label and Refresh button (Phase E)
+        return NextResponse.json({
+          scanId: cachedScan.id,
+          ...cachedScan.report,
+          fromCache: true,
+          cachedAt: new Date(cachedScan.createdAt).toISOString(),
+        });
       }
     }
 
@@ -57,8 +34,11 @@ export async function POST(request: NextRequest) {
       ? getDemoResearchReport(sortedDomains, mode, cleanPrompt)
       : await generateTrendResearchReport(sortedDomains, mode, cleanPrompt);
 
+    // Check every ticker Gemini typed against the real US listing directory before using
+    // it for anything (bug B5). Unverified companies get no rally value and keep Gemini's
+    // market-cap tier labeled as an AI estimate. See src/lib/researchVerification.ts.
     if (!report.isDemo) {
-      report = { ...report, companiesMentioned: await attachRealRecentRally(report.companiesMentioned) };
+      report = { ...report, companiesMentioned: await verifyMentionedCompanies(report.companiesMentioned) };
     }
 
     const scan = await createScan({
@@ -68,7 +48,7 @@ export async function POST(request: NextRequest) {
       ttlMs: CACHE_TTL_MS,
     });
 
-    return NextResponse.json({ scanId: scan.id, ...report });
+    return NextResponse.json({ scanId: scan.id, ...report, fromCache: false, cachedAt: null });
   } catch (error: unknown) {
     console.error('Error in /api/research POST handler:', error);
     const errorMsg = error instanceof Error ? error.message : 'Internal Server Error';

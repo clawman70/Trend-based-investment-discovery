@@ -1,5 +1,5 @@
 {
-  "name": "temp-app",
+  "name": "trend-discovery",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -19,7 +19,7 @@
     "@google/genai": "^2.22.0",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
-    "next": "15.5.25",
+    "next": "15.5.29",
     "pg": "^8.23.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
@@ -35,7 +35,7 @@
     "@types/react-dom": "^19",
     "dotenv": "^17.4.2",
     "eslint": "^9",
-    "eslint-config-next": "15.5.25",
+    "eslint-config-next": "15.5.29",
     "prisma": "^7.10.0",
     "tailwindcss": "^4",
     "typescript": "^5",

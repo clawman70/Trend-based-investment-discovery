@@ -4,28 +4,44 @@ import { getCachedData, setCachedData } from '@/lib/dbHelper';
 import { discoverCompaniesFromAI } from '@/lib/claudeService';
 import { normalizeTicker, validateTickers } from '@/lib/tickerValidator';
 import { DiscoveredCompany } from '@/lib/types';
+import { checkThesisLimits } from '@/lib/inputLimits';
 
 const CACHE_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 interface DiscoveryCachePayload {
   companies: DiscoveredCompany[];
+  /** When the AI run behind this entry finished (ISO). Missing on entries saved before Phase E. */
+  cachedAt?: string;
+}
+
+/** Per-thesis cache report sent to the UI for the "cached N days ago" label (Phase E). */
+export interface DiscoveryCacheInfo {
+  trend: string;
+  fromCache: boolean;
+  /** ISO time the cached result was produced; null if served from cache but the age is unknown. */
+  cachedAt: string | null;
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { trend, trends, filters } = body as {
+    const { trend, trends, filters, forceRefresh = false } = body as {
       trend?: string;
       trends?: string[];
       filters?: { exchange: string[]; marketCap: string[] };
+      /** true = ignore any cached result and run the AI search again (the Refresh button) */
+      forceRefresh?: boolean;
     };
 
+    // Input limits (Phase E): at most 3 theses, 500 characters each
+    const submitted: unknown[] = Array.isArray(trends) ? trends : trend !== undefined ? [trend] : [];
+    const limitError = checkThesisLimits(submitted);
+    if (limitError) {
+      return NextResponse.json({ error: limitError }, { status: 400 });
+    }
+
     // Support single or multiple trends list
-    const trendsList = Array.isArray(trends)
-      ? trends.filter((t) => t.trim() !== '')
-      : trend && trend.trim() !== ''
-      ? [trend.trim()]
-      : [];
+    const trendsList = (submitted as string[]).map((t) => t.trim()).filter((t) => t !== '');
 
     if (trendsList.length === 0) {
       return NextResponse.json({ error: 'At least one trend thesis is required' }, { status: 400 });
@@ -48,31 +64,51 @@ export async function POST(request: NextRequest) {
     // 1. Fetch AI discovery results for each trend in parallel — was sequential, which
     // made a multi-thesis discovery run take N times as long as it needed to.
     const perTrendResults = await Promise.all(
-      trendsList.map(async (t): Promise<{ trend: string; companies: DiscoveredCompany[] }> => {
+      trendsList.map(async (t): Promise<{ trend: string; companies: DiscoveredCompany[]; failed: boolean; cache: DiscoveryCacheInfo }> => {
         const normalizedPayload = JSON.stringify({ trend: t.trim().toLowerCase(), exchange, marketCap });
         const hash = crypto.createHash('sha256').update(normalizedPayload).digest('hex');
         const cacheKey = `discovery:${hash}`;
 
-        const cachedResult = (await getCachedData(cacheKey)) as DiscoveryCachePayload | null;
+        // Refresh skips the read but still overwrites the entry with the new result below
+        const cachedResult = forceRefresh ? null : ((await getCachedData(cacheKey)) as DiscoveryCachePayload | null);
         if (cachedResult && Array.isArray(cachedResult.companies)) {
-          return { trend: t, companies: cachedResult.companies };
+          return {
+            trend: t,
+            companies: cachedResult.companies,
+            failed: false,
+            cache: { trend: t, fromCache: true, cachedAt: cachedResult.cachedAt ?? null },
+          };
         }
 
         try {
           const companies = await discoverCompaniesFromAI(t, { exchange, marketCap });
-          await setCachedData(cacheKey, 'discovery', { companies }, CACHE_DURATION_MS);
-          return { trend: t, companies };
+          const cachedAt = new Date().toISOString();
+          const payload: DiscoveryCachePayload = { companies, cachedAt };
+          await setCachedData(cacheKey, 'discovery', payload, CACHE_DURATION_MS);
+          return { trend: t, companies, failed: false, cache: { trend: t, fromCache: false, cachedAt } };
         } catch (aiErr) {
           console.error(`AI Discovery failed for trend "${t}":`, aiErr);
-          // If we fail on one trend but have others, we can continue with an empty
-          // result for this one. Otherwise, if it's the only trend, throw.
+          // If it's the only thesis, fail the whole request. Otherwise carry on with the
+          // others, but mark this one as FAILED (bug B4: it used to be silently treated as
+          // "found nothing", which skewed convergence and told the user nothing).
           if (trendsList.length === 1) {
             throw aiErr;
           }
-          return { trend: t, companies: [] };
+          return { trend: t, companies: [], failed: true, cache: { trend: t, fromCache: false, cachedAt: null } };
         }
       })
     );
+
+    // Theses whose AI call failed (not "found zero companies" — the call itself errored).
+    // Reported to the UI so it can warn, and excluded from the convergence denominator.
+    const failedTrends = perTrendResults.filter((r) => r.failed).map((r) => r.trend);
+    const succeededCount = perTrendResults.length - failedTrends.length;
+    if (succeededCount === 0) {
+      return NextResponse.json(
+        { error: `Discovery failed for every thesis (${failedTrends.map((t) => `"${t}"`).join(', ')}). Please try again.`, failedTrends },
+        { status: 502 }
+      );
+    }
 
     for (const { trend: t, companies } of perTrendResults) {
       for (const c of companies) {
@@ -108,8 +144,10 @@ export async function POST(request: NextRequest) {
       console.warn('[Validation Gate] Ticker validation was bypassed (Finnhub symbol directory unavailable or not configured)');
     }
 
-    // 3. Construct convergence records
-    const activeTrendsCount = trendsList.length;
+    // 3. Construct convergence records. Convergence = theses matched / theses that actually
+    // ran. A failed thesis can't have matched anything, so counting it would turn a real
+    // "2 of 2" into a misleading "2 of 3" (bug B4).
+    const activeTrendsCount = succeededCount;
     const finalCompanies = Object.values(allDiscovered)
       .filter((c) => validTickersSet.has(c.ticker))
       .map((c) => {
@@ -147,6 +185,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       companies: finalCompanies,
       invalidTickers: validation.invalid,
+      failedTrends,
+      // Which theses were served from the 7-day cache, and how old each one is
+      cache: perTrendResults.filter((r) => !r.failed).map((r) => r.cache),
+      // Theses that actually ran. The browser's scoring drops convergence when this is 1
+      // (decision D2): with one thesis every company's convergence would be the same 1.0.
+      thesesRun: succeededCount,
       validationMetrics: {
         totalDiscovered: uniqueTickers.size,
         validCount: validation.valid.length,

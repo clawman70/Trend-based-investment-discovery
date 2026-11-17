@@ -1,87 +1,183 @@
-import { ScoredCompanyData } from './types';
-
 /**
- * Min-Max Normalization: Scales a value to 0-1 range
- * Handles cases where all values are identical (returns 0.5)
+ * Composite score (0-100), computed in the browser. Phase C ("honest scoring") rules:
+ *
+ * Five factors, each turned into a 0..1 factor score, then weighted by the sliders:
+ *   relevance   - the AI's 1-10 fit rating from discovery (AI, fixed 1..10 scale)
+ *   convergence - share of the theses that found this company (AI-derived).
+ *                 EXCLUDED when only one thesis ran (decision D2): it would be the same
+ *                 number for every row, so its weight is spread over the other factors.
+ *   valuation   - price-to-sales (Finnhub psTTM), lower is better. P/S exists for
+ *                 loss-making companies, unlike P/E. Pre-revenue companies (Finnhub reports
+ *                 zero revenue) rank last: their P/S is effectively infinite.
+ *   health      - debt-to-equity, lower is better. Negative D/E (negative equity, i.e.
+ *                 liabilities exceed assets) ranks last instead of being dropped.
+ *   growth      - revenue growth YoY (Finnhub), higher is better (decision D3). Price
+ *                 growth is never scored as a positive.
+ *
+ * Valuation, health and growth use RANK (percentile) scaling within the result set: the
+ * best company gets 1, the worst 0, the rest are evenly spaced by rank. One extreme
+ * outlier can therefore never squash everyone else together (min-max could).
+ *
+ * A factor with no data sits at neutral (0.5) and is marked "missing" in the breakdown —
+ * never filled with a guess. The 6-month rally flag is display-only (decision D4).
  */
-function normalizeMinMax(value: number, min: number, max: number): number {
-  if (max === min) return 0.5; // All values identical = neutral score
-  return Math.max(0, Math.min(1, (value - min) / (max - min)));
+import {
+  FactorContribution,
+  ScoreBreakdown,
+  ScoredCompanyData,
+  ScoreFactorKey,
+  ScoringConfig,
+  ScoringWeights,
+} from './types';
+
+/** Defaults from the v2 requirements doc (section 2.3). */
+export const DEFAULT_WEIGHTS: ScoringWeights = {
+  relevance: 25,
+  convergence: 25,
+  growth: 20,
+  valuation: 15,
+  health: 15,
+};
+
+export const FACTOR_KEYS: ScoreFactorKey[] = ['relevance', 'convergence', 'valuation', 'health', 'growth'];
+
+/** The factors that come from market data, counted by the coverage indicator. */
+export const MARKET_DATA_FACTORS: ScoreFactorKey[] = ['valuation', 'health', 'growth'];
+
+const NEUTRAL = 0.5;
+
+export interface ScoringOptions {
+  /** Theses that actually returned results this run. <= 1 excludes convergence (D2). */
+  thesesRun: number;
 }
 
+/** Convergence only carries information when more than one thesis ran. */
+export const isConvergenceActive = (thesesRun: number): boolean => thesesRun > 1;
+
 /**
- * Calculate normalized valuation score (0-1)
- * Lower P/E is better, but not linearly. Uses sigmoid-like curve.
+ * Rank-based scaling. `values[i]` is null when company i has no data (it gets null back).
+ * Among the rest, the best value scores 1 and the worst 0; ties share their average rank.
+ * +Infinity is allowed and means "worst possible" (pre-revenue P/S, negative-equity D/E).
+ * With fewer than two real values there's nothing to compare against, so they get 0.5.
  */
-function calculateValuationScore(peRatio: number | null, allPERatios: (number | null)[]): number {
-  if (peRatio === null || peRatio === undefined || peRatio <= 0) return 0.5; // Neutral if missing
-
-  const validPEs = allPERatios.filter((pe) => pe !== null && pe > 0) as number[];
-  if (validPEs.length === 0) return 0.5;
-
-  const minPE = Math.min(...validPEs);
-  const maxPE = Math.max(...validPEs);
-  const normalized = normalizeMinMax(peRatio, minPE, maxPE);
-
-  // Invert: lower P/E is better (higher score)
-  return 1 - normalized;
+export function percentileScores(values: (number | null)[], higherIsBetter: boolean): (number | null)[] {
+  const present = values.filter((v): v is number => v !== null && !Number.isNaN(v));
+  const n = present.length;
+  return values.map((v) => {
+    if (v === null || Number.isNaN(v)) return null;
+    if (n < 2) return NEUTRAL;
+    let worse = 0;
+    let ties = 0;
+    for (const other of present) {
+      if (other === v) ties++;
+      else if (higherIsBetter ? other < v : other > v) worse++;
+    }
+    // Average rank among ties (ties includes v itself), mapped to 0..1
+    return (worse + (ties - 1) / 2) / (n - 1);
+  });
 }
 
-/**
- * Calculate normalized financial health score (0-1) from debt-to-equity.
- * Lower debt-to-equity is healthier. Neutral (0.5) when the ratio is missing —
- * same convention as calculateValuationScore for missing P/E. Data availability
- * used to be 70% of this score; now that debt-to-equity is real data (Phase 0),
- * "did the data load" isn't a proxy for health anymore.
- */
-function calculateHealthScore(debtToEquity: number | null, allDebtToEquity: (number | null)[]): number {
-  if (debtToEquity === null || debtToEquity === undefined || debtToEquity < 0) return 0.5;
+/** Valuation input: P/S, with pre-revenue ranked as the worst possible value. */
+function valuationInput(c: ScoredCompanyData): number | null {
+  if (typeof c.priceToSales === 'number' && c.priceToSales > 0) return c.priceToSales;
+  if (c.preRevenue === true) return Number.POSITIVE_INFINITY;
+  return null;
+}
 
-  const validDTE = allDebtToEquity.filter((dte) => dte !== null && dte >= 0) as number[];
-  if (validDTE.length === 0) return 0.5;
+/** Health input: D/E, with negative equity ranked as the worst possible value. */
+function healthInput(c: ScoredCompanyData): number | null {
+  const dte = c.debtToEquity;
+  if (typeof dte !== 'number' || !Number.isFinite(dte)) return null;
+  return dte < 0 ? Number.POSITIVE_INFINITY : dte;
+}
 
-  const minDTE = Math.min(...validDTE);
-  const maxDTE = Math.max(...validDTE);
-  return 1 - normalizeMinMax(debtToEquity, minDTE, maxDTE); // Invert: lower debt is better
+function growthInput(c: ScoredCompanyData): number | null {
+  const g = c.revenueGrowthYoY;
+  return typeof g === 'number' && Number.isFinite(g) ? g : null;
+}
+
+const round1 = (n: number) => Math.round(n * 10) / 10;
+
+/** Share of total weight per factor for this run (convergence zeroed when excluded). */
+export function effectiveWeightShares(weights: ScoringWeights, thesesRun: number): Record<ScoreFactorKey, number> {
+  const active = FACTOR_KEYS.filter((k) => k !== 'convergence' || isConvergenceActive(thesesRun));
+  const total = active.reduce((sum, k) => sum + Math.max(0, weights[k] || 0), 0);
+  const shares = {} as Record<ScoreFactorKey, number>;
+  for (const k of FACTOR_KEYS) {
+    shares[k] = total > 0 && active.includes(k) ? Math.max(0, weights[k] || 0) / total : 0;
+  }
+  return shares;
 }
 
 export function calculateCompanyScores(
   companies: ScoredCompanyData[],
-  weights: { relevance: number; convergence: number; valuation: number; health: number }
+  weights: ScoringWeights,
+  options: ScoringOptions
 ): ScoredCompanyData[] {
-  const { relevance, convergence, valuation, health } = weights;
-  const totalWeight = relevance + convergence + valuation + health || 100;
+  const convergenceActive = isConvergenceActive(options.thesesRun);
+  const shares = effectiveWeightShares(weights, options.thesesRun);
 
-  // Pre-calculate min/max for normalization across all companies
-  const allPERatios = companies.map((c) => c.peRatio ?? null);
-  const allDebtToEquity = companies.map((c) => c.debtToEquity ?? null);
+  const valuation = percentileScores(companies.map(valuationInput), false); // lower P/S = better
+  const health = percentileScores(companies.map(healthInput), false); // lower D/E = better
+  const growth = percentileScores(companies.map(growthInput), true); // higher growth = better
 
-  return companies.map((c) => {
-    // 1. Relevance Score (1-10, normalized to 0-1)
-    const relevanceNorm = normalizeMinMax(c.relevanceScore || 5, 1, 10);
-
-    // 2. Convergence Score (0-1, already normalized)
-    const convergenceNorm = c.convergenceScore || 0;
-
-    // 3. Valuation Score (P/E ratio normalization)
-    const valuationNorm = calculateValuationScore(c.peRatio ?? null, allPERatios);
-
-    // 4. Health Score (debt-to-equity)
-    const healthNorm = calculateHealthScore(c.debtToEquity ?? null, allDebtToEquity);
-
-    // Weighted composite score (all factors 0-1, normalized)
-    const compositeRaw =
-      (relevanceNorm * relevance) / totalWeight +
-      (convergenceNorm * convergence) / totalWeight +
-      (valuationNorm * valuation) / totalWeight +
-      (healthNorm * health) / totalWeight;
-
-    // Scale to 0-100
-    const compositeScore = Math.round(compositeRaw * 100);
-
-    return {
-      ...c,
-      compositeScore,
+  return companies.map((c, i) => {
+    const factor = (status: FactorContribution['status'], value: number | null, key: ScoreFactorKey): FactorContribution => {
+      const used = status === 'excluded' ? null : value ?? NEUTRAL;
+      const weightPct = shares[key] * 100;
+      return { status, value: used, weightPct, points: used === null ? 0 : used * weightPct };
     };
+    const marketFactor = (value: number | null, key: ScoreFactorKey) =>
+      factor(value === null ? 'missing' : 'real', value, key);
+
+    // Relevance: AI 1-10 on a fixed scale (not relative to the others). 5 if absent.
+    const relevance = Math.max(1, Math.min(10, c.relevanceScore || 5));
+
+    const factors: Record<ScoreFactorKey, FactorContribution> = {
+      relevance: factor('ai', (relevance - 1) / 9, 'relevance'),
+      convergence: convergenceActive
+        ? factor('ai', Math.max(0, Math.min(1, c.convergenceScore || 0)), 'convergence')
+        : factor('excluded', null, 'convergence'),
+      valuation: marketFactor(valuation[i], 'valuation'),
+      health: marketFactor(health[i], 'health'),
+      growth: marketFactor(growth[i], 'growth'),
+    };
+
+    const scoreBreakdown: ScoreBreakdown = {
+      factors,
+      coverage: {
+        real: MARKET_DATA_FACTORS.filter((k) => factors[k].status === 'real').length,
+        total: MARKET_DATA_FACTORS.length,
+      },
+    };
+
+    const compositeScore = round1(FACTOR_KEYS.reduce((sum, k) => sum + factors[k].points, 0));
+    return { ...c, compositeScore, scoreBreakdown };
   });
+}
+
+/** Scores and sorts best-first. */
+export function scoreAndRank(
+  companies: ScoredCompanyData[],
+  weights: ScoringWeights,
+  options: ScoringOptions
+): ScoredCompanyData[] {
+  return calculateCompanyScores(companies, weights, options).sort((a, b) => b.compositeScore - a.compositeScore);
+}
+
+export function buildScoringConfig(weights: ScoringWeights, thesesRun: number): ScoringConfig {
+  return { weights: { ...weights }, thesesRun, method: 'percentile-v1' };
+}
+
+/** Reads a saved ScoringConfig defensively (history JSON may be from an older version). */
+export function parseScoringConfig(raw: unknown): ScoringConfig | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as { weights?: Record<string, unknown>; thesesRun?: unknown; method?: unknown };
+  if (!r.weights || typeof r.thesesRun !== 'number') return null;
+  const weights = { ...DEFAULT_WEIGHTS };
+  for (const k of FACTOR_KEYS) {
+    const v = r.weights[k];
+    if (typeof v === 'number' && Number.isFinite(v)) weights[k] = v;
+  }
+  return { weights, thesesRun: r.thesesRun, method: 'percentile-v1' };
 }

@@ -7,7 +7,10 @@ import { Prisma } from '@prisma/client';
 import { isDbAvailable } from '../dbHelper';
 import { prisma } from '../prisma';
 import { memorySearches, memorySearchResults, MemorySearch, MemorySearchResult } from '../memoryStore';
-import { ScoredCompanyData } from '../types';
+import { ScoredCompanyData, ScoringConfig, ScoreBreakdown } from '../types';
+import { buildRationaleNote } from '../rationale';
+import { parseScoringConfig } from '../scoring';
+import type { PickInput } from '../trackRecord';
 
 export interface SearchSummary {
   id: string;
@@ -15,6 +18,8 @@ export interface SearchSummary {
   trends: string[];
   filters: unknown;
   trendAnalysis: unknown;
+  /** Weights and theses-run count used for this snapshot; null for snapshots before Phase C. */
+  scoringConfig: ScoringConfig | null;
 }
 
 interface SearchResultRow {
@@ -33,11 +38,14 @@ function toScoredCompanyData(row: SearchResultRow): ScoredCompanyData {
   const financialData = (row.financialData ?? {}) as Record<string, unknown>;
   const dataQuality = (row.dataQuality ?? {}) as { priceSource?: string };
   const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
+  // Missing on pre-Phase-C rows -> null ("no data"), never a made-up default
+  const optNum = (key: string): number | null => num(financialData[key]);
+  const optBool = (key: string): boolean | null =>
+    typeof financialData[key] === 'boolean' ? (financialData[key] as boolean) : null;
 
   return {
     ticker: row.ticker,
     companyName: row.companyName,
-    rationale: row.rationale,
     trendsMatched: Array.isArray(row.trendMatched) ? row.trendMatched : [],
     convergenceScore: row.convergenceScore ?? 0,
     compositeScore: row.compositeScore ?? 0,
@@ -51,11 +59,32 @@ function toScoredCompanyData(row: SearchResultRow): ScoredCompanyData {
     growth5Y: financialData.growth5Y !== undefined ? (financialData.growth5Y as number | null) : null,
     debtToEquity: financialData.debtToEquity !== undefined ? (financialData.debtToEquity as number | null) : null,
     rationales: (financialData.rationales as Record<string, string>) ?? {},
+    priceToSales: optNum('priceToSales'),
+    preRevenue: optBool('preRevenue'),
+    lossMaking: optBool('lossMaking'),
+    revenueGrowthYoY: optNum('revenueGrowthYoY'),
+    change6M: optNum('change6M'),
+    rallied6M: optBool('rallied6M'),
+    scoreBreakdown: (financialData.scoreBreakdown as ScoreBreakdown | undefined) ?? undefined,
   };
 }
 
-function toSummary(row: { id: string; createdAt: Date; trends: string[]; filters: unknown; trendAnalysis: unknown }): SearchSummary {
-  return { id: row.id, createdAt: row.createdAt, trends: row.trends, filters: row.filters, trendAnalysis: row.trendAnalysis };
+function toSummary(row: {
+  id: string;
+  createdAt: Date;
+  trends: string[];
+  filters: unknown;
+  trendAnalysis: unknown;
+  scoringConfig?: unknown;
+}): SearchSummary {
+  return {
+    id: row.id,
+    createdAt: row.createdAt,
+    trends: row.trends,
+    filters: row.filters,
+    trendAnalysis: row.trendAnalysis,
+    scoringConfig: parseScoringConfig(row.scoringConfig),
+  };
 }
 
 export async function listSearches(): Promise<SearchSummary[]> {
@@ -64,6 +93,49 @@ export async function listSearches(): Promise<SearchSummary[]> {
     return rows.map(toSummary);
   }
   return [...memorySearches].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).map(toSummary);
+}
+
+/** A saved search reduced to what the track record needs (Phase D scorecard). */
+export interface SearchWithPicks {
+  id: string;
+  createdAt: Date;
+  trends: string[];
+  picks: PickInput[];
+}
+
+/** Price saved with a pick; null (never 0) when there wasn't a real one. */
+function storedPrice(financialData: unknown): number | null {
+  const price = (financialData as { stockPrice?: unknown } | null)?.stockPrice;
+  return typeof price === 'number' && Number.isFinite(price) && price > 0 ? price : null;
+}
+
+function toPick(row: { ticker: string; companyName: string; compositeScore: number | null; financialData: unknown }): PickInput {
+  return {
+    ticker: row.ticker.toUpperCase(),
+    companyName: row.companyName,
+    compositeScore: typeof row.compositeScore === 'number' ? row.compositeScore : null,
+    priceAtSearch: storedPrice(row.financialData),
+  };
+}
+
+/** Every saved search with its picks, oldest first. */
+export async function listSearchesWithPicks(): Promise<SearchWithPicks[]> {
+  if (await isDbAvailable()) {
+    const rows = await prisma.search.findMany({
+      orderBy: { createdAt: 'asc' },
+      include: { results: { select: { ticker: true, companyName: true, compositeScore: true, financialData: true } } },
+    });
+    return rows.map((s) => ({ id: s.id, createdAt: s.createdAt, trends: s.trends, picks: s.results.map(toPick) }));
+  }
+
+  return [...memorySearches]
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    .map((s) => ({
+      id: s.id,
+      createdAt: s.createdAt,
+      trends: s.trends,
+      picks: memorySearchResults.filter((r) => r.searchId === s.id).map(toPick),
+    }));
 }
 
 export async function getSearchWithResults(
@@ -85,12 +157,15 @@ export async function createSearch(input: {
   trends: string[];
   filters: unknown;
   trendAnalysis: unknown;
+  /** Weights + theses-run count used for these scores, so a restore re-scores the same way. */
+  scoringConfig?: ScoringConfig | null;
   results: ScoredCompanyData[];
 }): Promise<SearchSummary> {
   const resultRows: SearchResultRow[] = input.results.map((r) => ({
     ticker: r.ticker,
     companyName: r.companyName,
-    rationale: r.rationale || '',
+    // Joined from the per-thesis map (bug B1: used to read a field that was never set, so always '')
+    rationale: buildRationaleNote(r.rationales),
     trendMatched: r.trendsMatched || [],
     financialData: {
       stockPrice: r.stockPrice,
@@ -102,6 +177,14 @@ export async function createSearch(input: {
       debtToEquity: r.debtToEquity,
       rationales: r.rationales || {},
       relevanceScore: r.relevanceScore,
+      priceToSales: r.priceToSales ?? null,
+      preRevenue: r.preRevenue ?? null,
+      lossMaking: r.lossMaking ?? null,
+      revenueGrowthYoY: r.revenueGrowthYoY ?? null,
+      change6M: r.change6M ?? null,
+      rallied6M: r.rallied6M ?? null,
+      // Per-factor contributions as scored at save time (Phase D reads these)
+      scoreBreakdown: r.scoreBreakdown ?? null,
     },
     dataQuality: r.dataQuality,
     compositeScore: r.compositeScore,
@@ -114,6 +197,7 @@ export async function createSearch(input: {
         trends: input.trends,
         filters: (input.filters ?? {}) as Prisma.InputJsonValue,
         trendAnalysis: (input.trendAnalysis ?? {}) as Prisma.InputJsonValue,
+        scoringConfig: input.scoringConfig ? (input.scoringConfig as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
         results: {
           create: resultRows.map((r) => ({
             ...r,
@@ -133,6 +217,7 @@ export async function createSearch(input: {
     trends: input.trends,
     filters: input.filters ?? {},
     trendAnalysis: input.trendAnalysis ?? {},
+    scoringConfig: input.scoringConfig ?? null,
   };
   memorySearches.push(newSearch);
 

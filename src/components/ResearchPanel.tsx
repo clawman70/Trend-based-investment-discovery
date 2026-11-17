@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { TrendResearchReport } from '@/lib/types';
+import { describeCacheAge } from '@/lib/cacheAge';
 
 interface DomainConfig {
   id: string;
@@ -45,6 +46,14 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({ onReportGenerated 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [progressIdx, setProgressIdx] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
+  // Phase E: the last scan's request and whether it came from the 7-day cache, so a
+  // cached report shows its age and can be re-run fresh (the route's forceRefresh)
+  const [lastScan, setLastScan] = useState<{
+    request: { domains: string[]; mode: 'guided' | 'open'; customPrompt: string | null };
+    fromCache: boolean;
+    cachedAt: string | null;
+  } | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -69,7 +78,11 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({ onReportGenerated 
     });
   };
 
-  const handleRunScan = async () => {
+  const handleRunScan = async (refresh?: { domains: string[]; mode: 'guided' | 'open'; customPrompt: string | null }) => {
+    if (refresh) {
+      await runScan(refresh, true);
+      return;
+    }
     if (mode === 'guided' && selectedDomains.length < 2) {
       setError('Please select at least 2 research domains for a convergence scan.');
       return;
@@ -79,18 +92,25 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({ onReportGenerated 
       return;
     }
 
+    await runScan(
+      { domains: mode === 'guided' ? selectedDomains : [], mode, customPrompt: mode === 'open' ? customPrompt : null },
+      false
+    );
+  };
+
+  const runScan = async (
+    request: { domains: string[]; mode: 'guided' | 'open'; customPrompt: string | null },
+    forceRefresh: boolean
+  ) => {
     setIsLoading(true);
+    setIsRefreshing(forceRefresh);
     setError(null);
 
     try {
       const res = await fetch('/api/research', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          domains: mode === 'guided' ? selectedDomains : [],
-          mode,
-          customPrompt: mode === 'open' ? customPrompt : null
-        })
+        body: JSON.stringify({ ...request, forceRefresh }),
       });
 
       if (!res.ok) {
@@ -99,12 +119,14 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({ onReportGenerated 
       }
 
       const report = await res.json();
+      setLastScan({ request, fromCache: report.fromCache === true, cachedAt: report.cachedAt ?? null });
       onReportGenerated(report);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown research scan error';
       setError(msg);
     } finally {
       setIsLoading(false);
+      setIsRefreshing(false);
     }
   };
 
@@ -220,7 +242,7 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({ onReportGenerated 
           </div>
 
           <button
-            onClick={handleRunScan}
+            onClick={() => handleRunScan()}
             disabled={isLoading}
             className={`font-mono text-xs font-bold py-2.5 px-6 rounded-lg transition-all flex items-center gap-2 cursor-pointer ${
               isLoading
@@ -240,6 +262,23 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({ onReportGenerated 
         </div>
       </div>
 
+      {/* Cached-report notice + Refresh (Phase E) */}
+      {!isLoading && lastScan?.fromCache && (
+        <div data-testid="research-cache-notice" className="bg-brand-secondary border border-brand-border px-5 py-3 rounded-xl flex flex-wrap items-center justify-between gap-3 text-xs font-mono text-brand-light">
+          <span>
+            <span className="text-brand-yellow uppercase">{describeCacheAge(lastScan.cachedAt)}</span>
+            <span className="text-zinc-500"> · this report came from the 7-day research cache</span>
+          </span>
+          <button
+            onClick={() => handleRunScan(lastScan.request)}
+            className="px-3 py-1.5 border border-brand-green/40 text-brand-green bg-brand-green/5 hover:bg-brand-green/10 rounded font-bold cursor-pointer"
+            title="Run a new grounded Gemini scan (costs API credits)"
+          >
+            ↻ REFRESH SCAN
+          </button>
+        </div>
+      )}
+
       {/* Loading Progress overlay */}
       {isLoading && (
         <div className="bg-brand-secondary border border-brand-border p-8 rounded-2xl text-center space-y-4">
@@ -249,7 +288,7 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({ onReportGenerated 
             <span className="w-2.5 h-2.5 rounded-full bg-brand-green animate-bounce delay-300" />
           </div>
           <p className="text-xs font-mono text-zinc-200 uppercase tracking-widest font-bold">
-            Convergence Scan in Progress
+            {isRefreshing ? 'Refreshing Scan (cache skipped)' : 'Convergence Scan in Progress'}
           </p>
           <p className="text-xs font-mono text-brand-green max-w-md mx-auto animate-pulse">
             &gt; {PROGRESS_MESSAGES[progressIdx]}

@@ -5,11 +5,13 @@
  *   rejects with 401. Pulls ~5 years of weekly closes and computes 1Y / 5Y price growth.
  *   Growth is null (never 0) when history is missing, so the UI can show "N/A".
  * - Company profile: description, sector, industry, CEO.
+ * - Track record (Phase D): SPY daily closes and per-ticker split events.
  *
  * Yahoo is unofficial and can break; every function degrades to null instead of throwing.
  */
 
 import YahooFinance from 'yahoo-finance2';
+import type { DailyClose, SplitEvent } from './trackRecord';
 
 export type GrowthSource = 'calculated' | 'insufficient_history' | 'unavailable';
 
@@ -17,6 +19,12 @@ export interface PriceHistoryGrowth {
   ticker: string;
   growth1Y: number | null;
   growth5Y: number | null;
+  /**
+   * 6-month price change in percent, from the SAME weekly history as growth1Y/5Y (no
+   * second Yahoo call). Used only for the Discovery "6M rally >30%" flag, never in the
+   * score. Optional because growth results cached before Phase C don't have it.
+   */
+  change6M?: number | null;
   growthSource: GrowthSource;
 }
 
@@ -55,7 +63,7 @@ export function calculateGrowth(
   now: Date = new Date()
 ): PriceHistoryGrowth {
   if (!(currentPrice > 0) || closes.length === 0) {
-    return { ticker, growth1Y: null, growth5Y: null, growthSource: 'insufficient_history' };
+    return { ticker, growth1Y: null, growth5Y: null, change6M: null, growthSource: 'insufficient_history' };
   }
 
   const oneYearAgo = new Date(now);
@@ -70,16 +78,23 @@ export function calculateGrowth(
   const growth1Y = pct(price1Y);
   const growth5Y = pct(price5Y);
 
+  // Same rule as the Research tab's rally check, applied to the weekly bars already in hand
+  const change6M = calculateSixMonthRally(ticker, currentPrice, closes, now).changePercent;
+
   return {
     ticker,
     growth1Y,
     growth5Y,
+    change6M,
     growthSource: growth1Y !== null ? 'calculated' : 'insufficient_history',
   };
 }
 
 /** Yahoo uses dashes for share classes (BRK-B); Finnhub uses dots (BRK.B). */
 const toYahooSymbol = (ticker: string) => ticker.toUpperCase().replace(/\./g, '-');
+
+/** "Already priced in" rule shared by the Research tab and the Discovery flag: >30% in 6 months. */
+export const RALLY_THRESHOLD_PCT = 30;
 
 export interface SixMonthRally {
   ticker: string;
@@ -106,7 +121,7 @@ export function calculateSixMonthRally(
   }
 
   const changePercent = ((currentPrice - priceThen) / priceThen) * 100;
-  return { ticker, rallied: changePercent > 30, changePercent };
+  return { ticker, rallied: changePercent > RALLY_THRESHOLD_PCT, changePercent };
 }
 
 /** Whether a stock has rallied >30% over the last 6 months, computed from real price history — never an AI guess. */
@@ -172,6 +187,46 @@ export async function fetchPriceGrowth(ticker: string, currentPrice: number): Pr
     return calculateGrowth(symbol, currentPrice, closes);
   } catch (error) {
     console.warn(`[History] Yahoo chart failed for ${symbol}:`, error instanceof Error ? error.message : error);
-    return { ticker: symbol, growth1Y: null, growth5Y: null, growthSource: 'unavailable' };
+    return { ticker: symbol, growth1Y: null, growth5Y: null, change6M: null, growthSource: 'unavailable' };
+  }
+}
+
+/**
+ * Daily closes for a symbol between two dates (track record: SPY's close on a search date).
+ *
+ * Checked against yahoo-finance2 4.0.2's chart() on 2026-11-17: `interval: '1d'` returns one
+ * bar per trading day, stamped at that day's 9:30 ET open (13:30 UTC in summer), with
+ * `close` = that day's close, not dividend-adjusted (price-only, which is what we want;
+ * `adjclose` would fold dividends in). Weekends and holidays simply have no bar.
+ * Returns null on failure so callers show N/A.
+ */
+export async function fetchDailyCloses(symbol: string, from: Date, to: Date = new Date()): Promise<DailyClose[] | null> {
+  try {
+    const result = await yahooFinance.chart(toYahooSymbol(symbol), { period1: from, period2: to, interval: '1d' });
+    return result.quotes
+      .filter((q) => typeof q.close === 'number' && q.close > 0)
+      // Yahoo sends single-precision floats (732.44 arrives as 732.4400024414062). Rounding
+      // to 4 decimals restores the quoted price, so it matches Finnhub's 732.44 exactly.
+      .map((q) => ({ date: q.date, close: Math.round((q.close as number) * 10_000) / 10_000 }));
+  } catch (error) {
+    console.warn(`[Yahoo] Daily closes failed for ${symbol}:`, error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+/**
+ * Stock splits since `from` (track record: so a split doesn't show as a fake gain or loss).
+ * chart() includes split events by default; a monthly interval keeps the payload tiny and
+ * still returns each split's exact ex-date (checked live on NVDA's 2024-06-10 10:1 split).
+ * [] = checked, no splits. null = the check failed (Yahoo throws "No data found" for a
+ * delisted or unknown symbol); the caller then counts the pick as "split check unavailable".
+ */
+export async function fetchSplitEvents(symbol: string, from: Date): Promise<SplitEvent[] | null> {
+  try {
+    const result = await yahooFinance.chart(toYahooSymbol(symbol), { period1: from, interval: '1mo', events: 'split' });
+    return (result.events?.splits ?? []).map((s) => ({ date: s.date, numerator: s.numerator, denominator: s.denominator }));
+  } catch (error) {
+    console.warn(`[Yahoo] Split check failed for ${symbol}:`, error instanceof Error ? error.message : error);
+    return null;
   }
 }

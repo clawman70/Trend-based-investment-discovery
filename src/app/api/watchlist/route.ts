@@ -1,6 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { deleteWatchlistItem, listWatchlistItems, updateWatchlistItem, upsertWatchlistItem } from '@/lib/stores/watchlistStore';
-import { fetchQuotes, isFinnhubConfigured } from '@/lib/finnhubService';
+import { fetchQuote, fetchQuotes, isFinnhubConfigured } from '@/lib/finnhubService';
+import { compareWithBenchmark } from '@/lib/benchmark';
+import { BENCHMARK_TICKER } from '@/lib/trackRecord';
+
+/**
+ * Cost basis for a newly starred ticker: ALWAYS a fresh quote fetched here, at the moment
+ * of starring. The browser's price is ignored, because it can be hours or days old (a long
+ * open tab, or a search restored from History), while "vs SPY" measures from the starring
+ * date; both must describe the same moment (Phase D review fix).
+ * If no quote is available, returns null: stored as "no cost basis" and shown as N/A,
+ * never 0 (bug B8: 0 used to blank the gain/loss forever).
+ */
+async function resolveCostBasis(ticker: string): Promise<number | null> {
+  if (!isFinnhubConfigured()) return null;
+  try {
+    const quote = await fetchQuote(ticker);
+    return quote && quote.c > 0 ? quote.c : null;
+  } catch (err) {
+    console.warn(`[Watchlist] Could not fetch a price for ${ticker}; cost basis stored as N/A:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
 
 export async function GET() {
   try {
@@ -16,7 +37,8 @@ export async function GET() {
 
     if (isFinnhubConfigured()) {
       try {
-        const quotes = await fetchQuotes(tickers);
+        // SPY rides along in the same batch (fetchQuotes de-duplicates) for the "vs SPY" column
+        const quotes = await fetchQuotes([...tickers, BENCHMARK_TICKER]);
         quotes.forEach((quote, symbol) => priceMap.set(symbol, quote.c));
       } catch (err) {
         console.error('Failed to fetch live prices for watchlist:', err);
@@ -24,9 +46,9 @@ export async function GET() {
     }
 
     // Assemble watchlist results with gain/loss % calculations
-    const enrichedWatchlist = items.map((item) => {
+    const withReturns = items.map((item) => {
       const currentPrice = priceMap.get(item.ticker.toUpperCase()) ?? null;
-      const gainLossPercent = currentPrice !== null && item.priceAtAdd > 0
+      const gainLossPercent = currentPrice !== null && item.priceAtAdd !== null && item.priceAtAdd > 0
         ? ((currentPrice - item.priceAtAdd) / item.priceAtAdd) * 100
         : null;
 
@@ -36,6 +58,14 @@ export async function GET() {
         gainLossPercent,
       };
     });
+
+    // Phase D: the same gain/loss compared with SPY from the day each item was starred
+    // (same helper and rules as the Scorecard; N/A when either side is missing)
+    const comparisons = await compareWithBenchmark(
+      withReturns.map((item) => ({ since: new Date(item.addedAt), returnPercent: item.gainLossPercent })),
+      priceMap.get(BENCHMARK_TICKER) ?? null
+    );
+    const enrichedWatchlist = withReturns.map((item, i) => ({ ...item, ...comparisons[i] }));
 
     return NextResponse.json(enrichedWatchlist);
   } catch (error: unknown) {
@@ -48,10 +78,11 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { ticker, companyName, priceAtAdd, sourceSearchId, notes, tags } = body as {
+    // Any priceAtAdd the browser still sends is ignored: the cost basis is always a fresh
+    // server-side quote (see resolveCostBasis)
+    const { ticker, companyName, sourceSearchId, notes, tags } = body as {
       ticker: string;
       companyName: string;
-      priceAtAdd: number;
       sourceSearchId?: string;
       notes?: string;
       tags?: string[];
@@ -61,10 +92,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Ticker and Company Name are required' }, { status: 400 });
     }
 
+    const cleanTicker = ticker.trim().toUpperCase();
     const newItem = await upsertWatchlistItem({
-      ticker: ticker.trim().toUpperCase(),
+      ticker: cleanTicker,
       companyName,
-      priceAtAdd,
+      priceAtAdd: await resolveCostBasis(cleanTicker),
       sourceSearchId: sourceSearchId || null,
       notes: notes || null,
       tags: tags || [],

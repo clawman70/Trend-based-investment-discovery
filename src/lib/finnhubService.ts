@@ -6,7 +6,12 @@
  * parallel callers (enrich, peers, details modal) can never burst past the free-tier
  * limit of 60 calls/minute.
  *
- * Endpoint shapes were verified against live responses on 2026-09-15.
+ * Endpoint shapes were verified against live responses on 2026-09-15. The /stock/metric
+ * fields used for scoring (psTTM, epsTTM, revenuePerShare*, revenueGrowthTTMYoy,
+ * 26WeekPriceReturnDaily) were re-checked live on 2026-11-17 against QS, IONQ, RKLB, OKLO
+ * and AAPL. Key finding: for a loss-making company Finnhub sends peTTM = null (it never
+ * sends a negative P/E), while psTTM is present whenever the company has revenue, and a
+ * pre-revenue company comes back with revenuePerShareTTM / revenuePerShareAnnual = 0.
  */
 
 const BASE_URL = 'https://finnhub.io/api/v1';
@@ -127,6 +132,10 @@ export interface FinnhubProfile {
 /** Subset of /stock/metric?metric=all fields this app uses. */
 export interface FinnhubMetrics {
   peTTM?: number | null;
+  epsTTM?: number | null; // negative = loss-making over the last 12 months
+  psTTM?: number | null; // price / sales; absent when the company has no revenue
+  revenuePerShareTTM?: number | null; // 0 = no revenue (pre-revenue company)
+  revenuePerShareAnnual?: number | null;
   marketCapitalization?: number | null; // in millions
   revenueGrowthTTMYoy?: number | null; // percent
   'totalDebt/totalEquityQuarterly'?: number | null;
@@ -223,11 +232,24 @@ export function normalizeMetrics(metrics: FinnhubMetrics | null) {
   const marketCapMillions = positiveOrNull(metrics?.marketCapitalization);
   const marketCap = marketCapMillions !== null ? marketCapMillions * 1_000_000 : null;
   const priceToFcf = positiveOrNull(metrics?.pfcfShareTTM);
+  const eps = finiteOrNull(metrics?.epsTTM);
+  const priceToSales = positiveOrNull(metrics?.psTTM);
+
+  // Pre-revenue = Finnhub explicitly reports zero revenue per share AND gives no P/S.
+  // Only an explicit 0 counts; a missing field stays "unknown" (null), never assumed.
+  const revenuePerShare = finiteOrNull(metrics?.revenuePerShareTTM) ?? finiteOrNull(metrics?.revenuePerShareAnnual);
+  const preRevenue: boolean | null =
+    priceToSales !== null ? false : revenuePerShare === null ? null : revenuePerShare <= 0;
 
   return {
     marketCap,
-    // Negative P/E (loss-making companies) is not meaningful for valuation scoring
+    // P/E is only meaningful when the company earns money. Finnhub sends null for
+    // loss-makers; lossMaking (from real EPS) says WHY there is no P/E.
     peRatio: positiveOrNull(metrics?.peTTM),
+    lossMaking: eps === null ? null : eps < 0,
+    // Valuation input for scoring (Phase C): exists for profitable AND loss-making companies
+    priceToSales,
+    preRevenue,
     revenueGrowthYoY: finiteOrNull(metrics?.revenueGrowthTTMYoy),
     debtToEquity:
       finiteOrNull(metrics?.['totalDebt/totalEquityQuarterly']) ??
@@ -235,5 +257,6 @@ export function normalizeMetrics(metrics: FinnhubMetrics | null) {
     // Finnhub has no absolute FCF on the free tier; derive it from market cap / (P/FCF)
     freeCashFlowDerived: marketCap !== null && priceToFcf !== null ? marketCap / priceToFcf : null,
     priceReturn52Week: finiteOrNull(metrics?.['52WeekPriceReturnDaily']),
+    priceReturn26Week: finiteOrNull(metrics?.['26WeekPriceReturnDaily']),
   };
 }

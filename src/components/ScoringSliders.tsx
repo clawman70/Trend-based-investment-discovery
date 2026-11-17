@@ -1,60 +1,52 @@
 import React from 'react';
-
-interface Weights {
-  relevance: number;
-  convergence: number;
-  valuation: number;
-  health: number;
-}
+import { ScoringWeights } from '../lib/types';
+import { effectiveWeightShares, isConvergenceActive } from '../lib/scoring';
 
 interface ScoringSlidersProps {
-  weights: Weights;
-  onChangeWeights: (weights: Weights) => void;
+  weights: ScoringWeights;
+  onChangeWeights: (weights: ScoringWeights) => void;
+  /** Theses that ran this search. With one, convergence is left out of the score (D2). */
+  thesesRun: number;
 }
 
-export const ScoringSliders: React.FC<ScoringSlidersProps> = ({
-  weights,
-  onChangeWeights,
-}) => {
-  const sum = weights.relevance + weights.convergence + weights.valuation + weights.health || 1;
+const sliders: { key: keyof ScoringWeights; label: string; description: string; color: string }[] = [
+  {
+    key: 'relevance',
+    label: 'Trend Relevance',
+    description: "AI's 1-10 fit rating (AI estimate)",
+    color: 'accent-emerald-500',
+  },
+  {
+    key: 'convergence',
+    label: 'Multi-Thesis Overlap',
+    description: 'Share of your theses that found this company',
+    color: 'accent-teal-500',
+  },
+  {
+    key: 'growth',
+    label: 'Revenue Growth',
+    description: 'Revenue YoY, ranked within results (Finnhub)',
+    color: 'accent-sky-500',
+  },
+  {
+    key: 'valuation',
+    label: 'Valuation (Price/Sales)',
+    description: 'Lower P/S ranks higher; no revenue ranks last',
+    color: 'accent-amber-500',
+  },
+  {
+    key: 'health',
+    label: 'Financial Health (Debt/Equity)',
+    description: 'Lower debt ranks higher; negative equity ranks last',
+    color: 'accent-indigo-500',
+  },
+];
 
-  const handleSliderChange = (key: keyof Weights, value: number) => {
-    onChangeWeights({
-      ...weights,
-      [key]: value,
-    });
-  };
-
-  const getPercentage = (val: number) => {
-    return Math.round((val / sum) * 100);
-  };
-
-  const sliders = [
-    {
-      key: 'relevance' as const,
-      label: 'Trend Relevance',
-      description: 'Strength of AI alignment rationale',
-      color: 'accent-emerald-500',
-    },
-    {
-      key: 'convergence' as const,
-      label: 'Multi-Trend Convergence',
-      description: 'Overlap frequency across different theses',
-      color: 'accent-teal-500',
-    },
-    {
-      key: 'valuation' as const,
-      label: 'Valuation (P/E)',
-      description: 'Sensible P/E ratios and pricing tiers',
-      color: 'accent-amber-500',
-    },
-    {
-      key: 'health' as const,
-      label: 'Data Integrity',
-      description: 'Availability of live pricing data',
-      color: 'accent-indigo-500',
-    },
-  ];
+export const ScoringSliders: React.FC<ScoringSlidersProps> = ({ weights, onChangeWeights, thesesRun }) => {
+  const convergenceActive = isConvergenceActive(thesesRun);
+  // The % shown is each factor's real share of the score for this run, so with one thesis
+  // the other four visibly absorb convergence's weight.
+  const shares = effectiveWeightShares(weights, thesesRun);
 
   return (
     <div className="bg-brand-secondary/80 backdrop-blur-md border border-brand-border/60 p-6 rounded-xl shadow-2xl relative overflow-hidden transition-all duration-300 hover:border-brand-border">
@@ -69,18 +61,21 @@ export const ScoringSliders: React.FC<ScoringSlidersProps> = ({
       <div className="space-y-4">
         {sliders.map((s) => {
           const rawVal = weights[s.key];
-          const pctVal = getPercentage(rawVal);
+          const disabled = s.key === 'convergence' && !convergenceActive;
+          const pctVal = Math.round(shares[s.key] * 100);
 
           return (
-            <div key={s.key} className="space-y-1.5">
+            <div key={s.key} className={`space-y-1.5 ${disabled ? 'opacity-40' : ''}`}>
               <div className="flex items-center justify-between text-xs">
                 <div>
                   <span className="font-semibold text-zinc-200">{s.label}</span>
-                  <span className="block text-[10px] text-zinc-500 leading-none mt-0.5">{s.description}</span>
+                  <span className="block text-[10px] text-zinc-500 leading-none mt-0.5">
+                    {disabled ? 'Off: only one thesis ran, so every company would score the same here.' : s.description}
+                  </span>
                 </div>
                 <div className="flex items-center gap-1.5 font-mono">
                   <span className="text-zinc-500 text-[10px]">({rawVal})</span>
-                  <span className="text-brand-green font-bold w-10 text-right">{pctVal}%</span>
+                  <span className="text-brand-green font-bold w-10 text-right">{disabled ? 'OFF' : `${pctVal}%`}</span>
                 </div>
               </div>
               <input
@@ -88,8 +83,10 @@ export const ScoringSliders: React.FC<ScoringSlidersProps> = ({
                 min="0"
                 max="100"
                 value={rawVal}
-                onChange={(e) => handleSliderChange(s.key, parseInt(e.target.value) || 0)}
-                className={`w-full h-1 bg-zinc-900 rounded-lg appearance-none cursor-pointer ${s.color}`}
+                disabled={disabled}
+                aria-label={`${s.label} weight`}
+                onChange={(e) => onChangeWeights({ ...weights, [s.key]: parseInt(e.target.value) || 0 })}
+                className={`w-full h-1 bg-zinc-900 rounded-lg appearance-none ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'} ${s.color}`}
               />
             </div>
           );

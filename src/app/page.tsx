@@ -8,21 +8,37 @@ import { ValidationAlerts } from '@/components/ValidationAlerts';
 import { TrendReportCard } from '@/components/TrendReportCard';
 import { ScoringSliders } from '@/components/ScoringSliders';
 import { HistoryView } from '@/components/HistoryView';
+import { ScorecardView } from '@/components/ScorecardView';
 import { WatchlistView } from '@/components/WatchlistView';
 import { PortfoliosView } from '@/components/PortfoliosView';
 import { DetailsModal } from '@/components/DetailsModal';
 import { ResearchPanel } from '@/components/ResearchPanel';
 import { ResearchReport } from '@/components/ResearchReport';
 import { SpendCapBanner } from '@/components/SpendCapBanner';
-import { ScoredCompanyData, Filters, TrendAnalysis, TrendResearchReport } from '@/lib/types';
-import { calculateCompanyScores } from '@/lib/scoring';
-import { passesMarketCapFilter } from '@/lib/marketCapFilter';
+import { StatusBar } from '@/components/StatusBar';
+import { ScoredCompanyData, Filters, ScoringWeights, TrendAnalysis, TrendResearchReport } from '@/lib/types';
+import { buildScoringConfig, DEFAULT_WEIGHTS, parseScoringConfig, scoreAndRank } from '@/lib/scoring';
+import { applyRealDataFilters } from '@/lib/resultFilters';
+import { buildRationaleNote } from '@/lib/rationale';
+import { describeCacheAge, formatElapsed } from '@/lib/cacheAge';
+import type { DiscoveryCacheInfo } from '@/app/api/discover/route';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<string>('research');
   const [inspectedTicker, setInspectedTicker] = useState<string | null>(null);
   const [researchReport, setResearchReport] = useState<(TrendResearchReport & { scanId: string }) | null>(null);
-  
+  // Bug B9 (the track-record chain). currentSearchId = the saved history snapshot the
+  // results on screen came from (a fresh run once its auto-save finishes, or a restored
+  // one). Starring a company stores it as the watchlist item's sourceSearchId.
+  const [currentSearchId, setCurrentSearchId] = useState<string | null>(null);
+  // A Research-tab thesis loaded into Discovery: its audit record id, so the search it
+  // leads to can be written back to that record.
+  const [pendingLoadedThesis, setPendingLoadedThesis] = useState<{ id: string; thesis: string } | null>(null);
+  // True when the results on screen were restored from History. Their prices are from the
+  // search date, so they must not become a watchlist cost basis dated today (found during
+  // the Phase D live check: it made gain/loss and "vs SPY" compare mismatched windows).
+  const [resultsFromHistory, setResultsFromHistory] = useState<boolean>(false);
+
   const [filters, setFilters] = useState<Filters>({
     marketCap: [],
     exchange: [],
@@ -32,21 +48,37 @@ export default function Home() {
   const [trends, setTrends] = useState<string[]>(['']);
   const [trendAnalyses, setTrendAnalyses] = useState<Record<string, TrendAnalysis>>({});
   const [showDiscoverButton, setShowDiscoverButton] = useState<boolean>(false);
-  const [weights, setWeights] = useState({
-    relevance: 30,
-    convergence: 30,
-    valuation: 20,
-    health: 20,
-  });
+  const [weights, setWeights] = useState<ScoringWeights>(DEFAULT_WEIGHTS);
+  // Theses that actually returned results in the current run. 1 = convergence is left out
+  // of the score and its slider is greyed out (decision D2).
+  const [thesesRun, setThesesRun] = useState<number>(1);
 
   const [results, setResults] = useState<ScoredCompanyData[]>([]);
   const [invalidTickers, setInvalidTickers] = useState<string[]>([]);
   const [validationBypassed, setValidationBypassed] = useState<boolean>(false);
+  // Theses whose discovery call failed in a multi-thesis run (bug B4) — shown as a warning
+  const [failedTrends, setFailedTrends] = useState<string[]>([]);
   
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isDiscovering, setIsDiscovering] = useState<boolean>(false);
   const [loadingStep, setLoadingStep] = useState<'idle' | 'analyzing' | 'discovering' | 'enriching' | 'completed'>('idle');
   const [error, setError] = useState<string | null>(null);
+
+  // Phase E discovery refresh. discoveryCache = which theses in the results on screen
+  // came from the 7-day cache (and when). lastRun = the exact theses + filters behind
+  // those results, so Refresh re-runs what is shown even if the inputs were edited since.
+  const [discoveryCache, setDiscoveryCache] = useState<DiscoveryCacheInfo[]>([]);
+  const [lastRun, setLastRun] = useState<{ trends: string[]; filters: Filters } | null>(null);
+  const [isRefreshRun, setIsRefreshRun] = useState<boolean>(false);
+  // Real elapsed time of the current discovery run (a fresh AI search took ~8 minutes
+  // when measured live in Phase C), so a long wait visibly is still progressing.
+  const [discoverStartedAt, setDiscoverStartedAt] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (discoverStartedAt === null) return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [discoverStartedAt]);
 
   // Watchlist tracker
   const [watchlistTickers, setWatchlistTickers] = useState<Set<string>>(new Set());
@@ -91,8 +123,16 @@ export default function Home() {
           body: JSON.stringify({
             ticker: company.ticker,
             companyName: company.companyName,
-            priceAtAdd: company.stockPrice || 0,
-            notes: company.rationale,
+            // Only send a real price. If it's missing (0), the watchlist route fetches a
+            // live quote itself, and stores N/A if that also fails (bug B8).
+            // A restored snapshot's price is from the search date, so send none and let the
+            // server fetch today's quote: the cost basis is the price on the day you star it.
+            priceAtAdd: !resultsFromHistory && company.stockPrice > 0 ? company.stockPrice : null,
+            // The saved search this pick came from (bug B9). Null if the auto-save hasn't
+            // finished yet or failed; the star still works, it just isn't linked.
+            sourceSearchId: currentSearchId ?? undefined,
+            // Built from the per-thesis rationale map (bug B1: used to read a field that was never set)
+            notes: buildRationaleNote(company.rationales),
             tags: company.trendsMatched || [],
           }),
         });
@@ -107,7 +147,7 @@ export default function Home() {
     } catch (err) {
       console.error('Failed to toggle watchlist ticker status:', err);
     }
-  }, [watchlistTickers]);
+  }, [watchlistTickers, currentSearchId, resultsFromHistory]);
 
   const handleRestoreSearch = useCallback(async (id: string) => {
     setError(null);
@@ -122,9 +162,24 @@ export default function Home() {
       setTrends(data.search.trends);
       setFilters(data.search.filters);
       setTrendAnalyses(data.search.trendAnalysis || {});
-      setResults(data.companies || []);
+
+      // Re-score with the weights and theses-run count saved with the snapshot, so it
+      // ranks exactly as it did when saved. Snapshots from before Phase C have no saved
+      // config: they're re-scored with the current weights, and any data they didn't
+      // store (P/S, revenue growth) shows as missing.
+      const savedConfig = parseScoringConfig(data.search.scoringConfig);
+      const restoredThesesRun = savedConfig?.thesesRun ?? (data.search.trends?.length || 1);
+      const restoredWeights = savedConfig?.weights ?? weights;
+      setWeights(restoredWeights);
+      setThesesRun(restoredThesesRun);
+      setResults(scoreAndRank(data.companies || [], restoredWeights, { thesesRun: restoredThesesRun }));
       setInvalidTickers([]);
       setValidationBypassed(false);
+      setFailedTrends([]);
+      setDiscoveryCache([]); // restored from History, not from the discovery cache
+      setLastRun({ trends: data.search.trends, filters: data.search.filters });
+      setCurrentSearchId(id); // stars from a restored search link back to it (B9)
+      setResultsFromHistory(true);
       setShowDiscoverButton(true);
       setLoadingStep('completed');
       setActiveTab('discover');
@@ -132,7 +187,7 @@ export default function Home() {
       const errorMessage = err instanceof Error ? err.message : 'Could not load search history snapshot';
       setError(errorMessage);
     }
-  }, []);
+  }, [weights]);
 
   const handleAnalyzeTrends = useCallback(async () => {
     const activeTrends = trends.filter((t) => t.trim().length > 0);
@@ -184,25 +239,41 @@ export default function Home() {
     }
   }, [trends]);
 
-  const handleDiscoverCandidates = useCallback(async () => {
-    const activeTrends = trends.filter((t) => t.trim().length > 0);
+  /**
+   * Runs discovery. With `forceRefresh` (the Refresh button) it re-runs `override` — the
+   * theses and filters behind the results on screen — and the server skips its cache.
+   */
+  const handleDiscoverCandidates = useCallback(async (
+    opts: { forceRefresh?: boolean; override?: { trends: string[]; filters: Filters } } = {}
+  ) => {
+    const forceRefresh = opts.forceRefresh === true;
+    const runFilters = opts.override?.filters ?? filters;
+    const activeTrends = (opts.override?.trends ?? trends).filter((t) => t.trim().length > 0);
     if (activeTrends.length === 0) {
       setError('Please enter at least one investment thesis.');
       return;
     }
 
     setIsDiscovering(true);
+    setIsRefreshRun(forceRefresh);
+    setDiscoverStartedAt(Date.now());
+    setNowTick(Date.now());
+    setDiscoveryCache([]);
+    setLastRun({ trends: activeTrends, filters: runFilters });
     setLoadingStep('discovering');
     setError(null);
     setResults([]);
     setInvalidTickers([]);
+    setFailedTrends([]);
+    setCurrentSearchId(null); // set again once this run's snapshot is saved
+    setResultsFromHistory(false);
 
     try {
       // 1. Scan market for companies matching active trends
       const discoverResponse = await fetch('/api/discover', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trends: activeTrends, filters }),
+        body: JSON.stringify({ trends: activeTrends, filters: runFilters, forceRefresh }),
       });
 
       if (!discoverResponse.ok) {
@@ -213,14 +284,22 @@ export default function Home() {
       const discoverData = (await discoverResponse.json()) as {
         companies: ScoredCompanyData[];
         invalidTickers: string[];
+        failedTrends?: string[];
+        thesesRun?: number;
         validationMetrics?: { validationBypassed?: boolean };
+        cache?: DiscoveryCacheInfo[];
       };
+      setDiscoveryCache(discoverData.cache || []);
+      // Server counts only theses that succeeded (bug B4); fall back to what was submitted
+      const runThesesCount = discoverData.thesesRun ?? activeTrends.length;
+      setThesesRun(runThesesCount);
       
       const discovered = discoverData.companies || [];
       const droppedTickers = discoverData.invalidTickers || [];
       
       setInvalidTickers(droppedTickers);
       setValidationBypassed(!!discoverData.validationMetrics?.validationBypassed);
+      setFailedTrends(discoverData.failedTrends || []);
 
       if (discovered.length === 0) {
         setError('No valid companies matched your filters. Try broadening your criteria or revising your theses.');
@@ -261,49 +340,71 @@ export default function Home() {
           debtToEquity: enrichInfo?.debtToEquity ?? null,
           growth1Y: enrichInfo?.growth1Y ?? null,
           growth5Y: enrichInfo?.growth5Y ?? null,
+          priceToSales: enrichInfo?.priceToSales ?? null,
+          preRevenue: enrichInfo?.preRevenue ?? null,
+          lossMaking: enrichInfo?.lossMaking ?? null,
+          revenueGrowthYoY: enrichInfo?.revenueGrowthYoY ?? null,
+          change6M: enrichInfo?.change6M ?? null,
+          rallied6M: enrichInfo?.rallied6M ?? null,
           dataQuality: enrichInfo?.dataQuality ?? {
             priceSource: 'unavailable',
           },
         };
       });
 
-      // 3b. Enforce the market-cap filter against real (enriched) data — the AI only
-      // sees it as a text hint, so a company whose actual market cap doesn't fit the
-      // requested tier gets dropped here rather than trusted from the model's guess.
-      const capFilteredResults = mergedResults.filter((c) => passesMarketCapFilter(c.marketCap, filters.marketCap));
+      // 3b. Enforce the market-cap AND exchange filters against real (enriched) data — the
+      // AI only sees them as text hints, so a company whose actual market cap or listing
+      // exchange doesn't fit gets dropped here rather than trusted from the model's answer.
+      // Unknown values are kept (see src/lib/resultFilters.ts).
+      const capFilteredResults = applyRealDataFilters(mergedResults, runFilters);
 
       if (capFilteredResults.length === 0) {
-        setError('No companies matched your filters after checking real market cap data. Try broadening your market-cap selection.');
+        setError('No companies matched your filters after checking real market cap and exchange data. Try broadening your market-cap or exchange selection.');
         setLoadingStep('idle');
         setIsDiscovering(false);
         return;
       }
 
-      // 4. Calculate weighted composite scores client-side
-      const scoredResults = calculateCompanyScores(capFilteredResults, weights);
-      
-      // Sort primarily by composite score
-      scoredResults.sort((a, b) => b.compositeScore - a.compositeScore);
+      // 4. Calculate weighted composite scores client-side, best first (src/lib/scoring.ts)
+      const scoredResults = scoreAndRank(capFilteredResults, weights, { thesesRun: runThesesCount });
 
       setResults(scoredResults);
       setLoadingStep('completed');
 
       // 5. Auto-save completed research snapshot to DB History
       try {
-        await fetch('/api/history', {
+        const historyRes = await fetch('/api/history', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             trends: activeTrends,
             filters: {
-              marketCap: filters.marketCap,
-              exchange: filters.exchange,
-              currentPrice: filters.currentPrice,
+              marketCap: runFilters.marketCap,
+              exchange: runFilters.exchange,
+              currentPrice: runFilters.currentPrice,
             },
             trendAnalysis: trendAnalyses,
+            // Saved so a restored search re-scores the same way (and for the Phase D track record)
+            scoringConfig: buildScoringConfig(weights, runThesesCount),
             results: scoredResults,
           }),
         });
+
+        // B9: keep the saved search's id so stars link to it, and write it back to the
+        // Research-tab thesis that led here. Only linked when that exact thesis text was
+        // part of this run: an edited thesis is a different thesis.
+        const saved = historyRes.ok ? ((await historyRes.json()) as { id?: string }) : null;
+        if (saved?.id) {
+          setCurrentSearchId(saved.id);
+          if (pendingLoadedThesis && activeTrends.some((t) => t.trim() === pendingLoadedThesis.thesis.trim())) {
+            await fetch('/api/research/load', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: pendingLoadedThesis.id, searchId: saved.id }),
+            }).catch((linkErr) => console.error('Failed to link the loaded thesis to its search:', linkErr));
+            setPendingLoadedThesis(null);
+          }
+        }
       } catch (hErr) {
         console.error('Failed to log search snapshot to history database:', hErr);
       }
@@ -314,8 +415,10 @@ export default function Home() {
       setLoadingStep('idle');
     } finally {
       setIsDiscovering(false);
+      setIsRefreshRun(false);
+      setDiscoverStartedAt(null);
     }
-  }, [trends, filters, weights, trendAnalyses]);
+  }, [trends, filters, weights, trendAnalyses, pendingLoadedThesis]);
 
   const handleSelectAdjacentTrend = useCallback((adjTrend: string) => {
     setTrends((prev) => {
@@ -334,15 +437,10 @@ export default function Home() {
     });
   }, []);
 
-  const handleWeightsChange = useCallback((newWeights: typeof weights) => {
+  const handleWeightsChange = useCallback((newWeights: ScoringWeights) => {
     setWeights(newWeights);
-    setResults((prev) => {
-      if (prev.length === 0) return prev;
-      const reCalculated = calculateCompanyScores(prev, newWeights);
-      reCalculated.sort((a, b) => b.compositeScore - a.compositeScore);
-      return reCalculated;
-    });
-  }, []);
+    setResults((prev) => (prev.length === 0 ? prev : scoreAndRank(prev, newWeights, { thesesRun })));
+  }, [thesesRun]);
 
   // Client-side stock price threshold filtering
   let filteredResults = results;
@@ -364,17 +462,8 @@ export default function Home() {
       }} />
       
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
-        {/* Terminal Header Info */}
-        <div className="bg-brand-secondary/40 border border-brand-border/40 px-5 py-3 rounded-lg mb-6 flex flex-wrap justify-between items-center text-xs font-mono text-brand-light gap-2">
-          <div className="flex items-center space-x-2">
-            <span className="w-2.5 h-2.5 bg-brand-green rounded-full inline-block animate-ping" />
-            <span>TERMINAL STATUS: ONLINE</span>
-          </div>
-          <div className="flex items-center space-x-4">
-            <span>AI: CLAUDE + GEMINI (RESEARCH)</span>
-            <span>DATA: FINNHUB + YAHOO FINANCE</span>
-          </div>
-        </div>
+        {/* Real status bar: storage mode, API keys, ticker directory, spend (GET /api/status) */}
+        <StatusBar />
 
         <SpendCapBanner />
 
@@ -385,7 +474,8 @@ export default function Home() {
             {researchReport && (
               <ResearchReport
                 report={researchReport}
-                onLoadThesis={(thesis) => {
+                onLoadThesis={(thesis, loadedId) => {
+                  setPendingLoadedThesis(loadedId ? { id: loadedId, thesis } : null);
                   setTrends([thesis]);
                   setActiveTab('discover');
                 }}
@@ -402,7 +492,7 @@ export default function Home() {
               filters={filters}
               setFilters={setFilters}
               onAnalyze={handleAnalyzeTrends}
-              onDiscover={handleDiscoverCandidates}
+              onDiscover={() => handleDiscoverCandidates()}
               isAnalyzing={isAnalyzing}
               isDiscovering={isDiscovering}
               showDiscoverButton={showDiscoverButton}
@@ -440,6 +530,13 @@ export default function Home() {
                     ? 'AI Model scanning market for candidates matching theses intersection...'
                     : 'Fetching live prices, fundamentals & price history...'}
                 </p>
+                {discoverStartedAt !== null && (
+                  <p data-testid="discover-elapsed" className="text-xs text-brand-green mt-3 font-mono">
+                    {isRefreshRun ? 'REFRESHING — ' : ''}ELAPSED {formatElapsed(nowTick - discoverStartedAt)}
+                    {loadingStep === 'discovering' &&
+                      ' · a fresh AI web search can take several minutes (one run measured ~8 min); cached theses return in seconds'}
+                  </p>
+                )}
                 <p className="text-xs text-brand-light mt-1.5 font-mono">
                   {loadingStep === 'analyzing'
                     ? 'Assessing estimated TAM size, triggers, and macro risks'
@@ -465,8 +562,30 @@ export default function Home() {
             )}
 
             {/* Invalid Ticker Alerts */}
-            {!isLoading && (invalidTickers.length > 0 || validationBypassed) && (
-              <ValidationAlerts invalidTickers={invalidTickers} bypassed={validationBypassed} />
+            {!isLoading && (invalidTickers.length > 0 || validationBypassed || failedTrends.length > 0) && (
+              <ValidationAlerts invalidTickers={invalidTickers} bypassed={validationBypassed} failedTrends={failedTrends} />
+            )}
+
+            {/* Cached-result notice + Refresh (Phase E) */}
+            {!isLoading && results.length > 0 && discoveryCache.some((d) => d.fromCache) && lastRun && (
+              <div data-testid="discovery-cache-notice" className="bg-brand-secondary/40 border border-brand-border/40 px-5 py-3 rounded-lg flex flex-wrap items-center justify-between gap-3 text-xs font-mono text-brand-light">
+                <div className="space-y-0.5">
+                  {discoveryCache.filter((d) => d.fromCache).map((d) => (
+                    <div key={d.trend}>
+                      <span className="text-brand-yellow uppercase">{describeCacheAge(d.cachedAt)}</span>
+                      {discoveryCache.length > 1 && <span className="text-zinc-500"> · &quot;{d.trend}&quot;</span>}
+                    </div>
+                  ))}
+                  <div className="text-zinc-500">Company list from the 7-day discovery cache. Prices and fundamentals below are re-fetched from market data.</div>
+                </div>
+                <button
+                  onClick={() => handleDiscoverCandidates({ forceRefresh: true, override: lastRun })}
+                  className="px-3 py-1.5 border border-brand-green/40 text-brand-green bg-brand-green/5 hover:bg-brand-green/10 rounded font-bold cursor-pointer"
+                  title="Run a new AI search for these theses (takes minutes and costs API credits)"
+                >
+                  ↻ REFRESH
+                </button>
+              </div>
             )}
 
             {/* Matrix Result & Weight Slider Dashboard */}
@@ -485,6 +604,7 @@ export default function Home() {
                   ) : (
                     <ResultsTable
                       data={filteredResults}
+                      thesesRun={thesesRun}
                       watchlistTickers={watchlistTickers}
                       onToggleWatchlist={handleToggleWatchlist}
                     />
@@ -492,7 +612,7 @@ export default function Home() {
                 </div>
 
                 <div className="lg:col-span-3 order-1 lg:order-2">
-                  <ScoringSliders weights={weights} onChangeWeights={handleWeightsChange} />
+                  <ScoringSliders weights={weights} onChangeWeights={handleWeightsChange} thesesRun={thesesRun} />
                 </div>
               </div>
             )}
@@ -516,6 +636,8 @@ export default function Home() {
         {activeTab === 'history' && (
           <HistoryView onRestoreSearch={handleRestoreSearch} isActive={activeTab === 'history'} />
         )}
+
+        {activeTab === 'scorecard' && <ScorecardView isActive={activeTab === 'scorecard'} />}
 
         {activeTab === 'watchlist' && (
           <WatchlistView isActive={activeTab === 'watchlist'} onInspect={setInspectedTicker} />

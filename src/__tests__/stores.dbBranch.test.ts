@@ -34,7 +34,6 @@ import { ScoredCompanyData, TrendResearchReport } from '../lib/types';
 const mockCompany: ScoredCompanyData = {
   ticker: 'AAPL',
   companyName: 'Apple Inc.',
-  rationale: 'Direct',
   relevanceScore: 9,
   trendsMatched: ['AI Tools'],
   convergenceScore: 1,

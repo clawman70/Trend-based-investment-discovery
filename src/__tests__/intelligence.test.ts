@@ -2,10 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as analyzeTrendPOST } from '../app/api/analyze-trend/route';
 import { POST as discoverPOST } from '../app/api/discover/route';
-import { POST as scorePOST } from '../app/api/score/route';
 import * as claudeService from '../lib/claudeService';
 import * as tickerValidator from '../lib/tickerValidator';
-import { calculateCompanyScores } from '../lib/scoring';
 import { ScoredCompanyData } from '../lib/types';
 
 vi.mock('../lib/tickerValidator', async (importOriginal) => {
@@ -120,117 +118,91 @@ describe('Phase 2 — Intelligence Layer Tests', () => {
 
       // The sorted output should list AAPL first (higher convergence score)
       expect(companies[0].ticker).toBe('AAPL');
+      // Both theses ran, so the browser keeps convergence in the score (D2)
+      expect(json.thesesRun).toBe(2);
     });
   });
 
-  describe('Composite Scoring (calculateCompanyScores)', () => {
-    const mockCompanies: ScoredCompanyData[] = [
-      {
-        ticker: 'GROW',
-        companyName: 'Growth Play',
-        rationale: 'R1',
-        relevanceScore: 10,
-        trendsMatched: ['T1', 'T2'],
-        convergenceScore: 1.0,
-        rationales: {},
-        stockPrice: 100,
-        marketCap: 5000000000,
-        growth1Y: 50,
-        growth5Y: 60,
-        exchange: 'NASDAQ',
-        peRatio: 40, // High PE
-        dataQuality: {
-          priceSource: 'live',
-          growthSource: 'calculated',
-        },
-        compositeScore: 0,
-      },
-      {
-        ticker: 'VALU',
-        companyName: 'Value Play',
-        rationale: 'R2',
-        relevanceScore: 7,
-        trendsMatched: ['T1'],
-        convergenceScore: 0.5,
-        rationales: {},
-        stockPrice: 20,
-        marketCap: 1000000000,
-        growth1Y: 5,
-        growth5Y: 10,
-        exchange: 'NYSE',
-        peRatio: 12, // Low PE (great valuation)
-        dataQuality: {
-          priceSource: 'live',
-          growthSource: 'calculated',
-        },
-        compositeScore: 0,
-      },
-    ];
-
-    it('should adjust composite scores when changing weights', () => {
-      // Growth-heavy weights
-      const growthWeights = { relevance: 10, convergence: 10, growth: 70, valuation: 5, health: 5 };
-      const growthScored = calculateCompanyScores(mockCompanies, growthWeights);
-
-      // Value-heavy weights
-      const valueWeights = { relevance: 10, convergence: 10, growth: 5, valuation: 70, health: 5 };
-      const valueScored = calculateCompanyScores(mockCompanies, valueWeights);
-
-      const growthGrowScore = growthScored.find((c) => c.ticker === 'GROW')?.compositeScore || 0;
-      const growthValuScore = growthScored.find((c) => c.ticker === 'VALU')?.compositeScore || 0;
-
-      const valueGrowScore = valueScored.find((c) => c.ticker === 'GROW')?.compositeScore || 0;
-      const valueValuScore = valueScored.find((c) => c.ticker === 'VALU')?.compositeScore || 0;
-
-      // GROW has 50%/60% growth vs VALU's 5%/10%.
-      // In growth-heavy scoring, GROW should score higher than VALU.
-      expect(growthGrowScore).toBeGreaterThan(growthValuScore);
-
-      // VALU has a PE of 12 (valuationScore = 10) vs GROW's 40 (valuationScore = 6).
-      // In valuation-heavy scoring, VALU's score relative standing should increase significantly.
-      expect(valueValuScore).toBeGreaterThan(valueGrowScore);
-    });
-
-    it('should support the POST /api/score endpoint', async () => {
-      const request = new NextRequest('http://localhost:3000/api/score', {
-        method: 'POST',
-        body: JSON.stringify({
-          companies: mockCompanies,
-          weights: { relevance: 20, convergence: 20, growth: 20, valuation: 20, health: 20 },
-        }),
-      });
-
-      const response = await scorePOST(request);
-      expect(response.status).toBe(200);
-
+  describe('Single-thesis run in POST /api/discover (decision D2)', () => {
+    it('reports thesesRun = 1 so the browser leaves convergence out of the score', async () => {
+      vi.mocked(claudeService.discoverCompaniesFromAI).mockResolvedValueOnce([
+        { ticker: 'IONQ', companyName: 'IonQ', rationale: 'Quantum', relevanceScore: 8 },
+      ]);
+      vi.mocked(tickerValidator.validateTickers).mockResolvedValue({ valid: ['IONQ'], invalid: [], bypassed: false });
+      const response = await discoverPOST(
+        new NextRequest('http://localhost:3000/api/discover', {
+          method: 'POST',
+          body: JSON.stringify({ trends: ['Quantum computing'], filters: { exchange: [], marketCap: [] } }),
+        })
+      );
       const json = await response.json();
-      expect(json.length).toBe(2);
-      expect(json[0].compositeScore).toBeGreaterThan(0);
-    });
-
-    it('health score no longer rewards "data loaded" over real debt-to-equity (Phase 3 reweight)', () => {
-      const healthOnlyWeights = { relevance: 0, convergence: 0, valuation: 0, health: 100 };
-      const base: ScoredCompanyData = {
-        ...mockCompanies[0],
-        ticker: 'DTE1',
-        debtToEquity: 0.5,
-        dataQuality: { priceSource: 'live', growthSource: 'calculated' },
-      };
-      // Same debt-to-equity, but price data failed to load for this one.
-      const sameDebtNoPrice: ScoredCompanyData = {
-        ...base,
-        ticker: 'DTE2',
-        dataQuality: { priceSource: 'unavailable' },
-      };
-
-      const scored = calculateCompanyScores([base, sameDebtNoPrice], healthOnlyWeights);
-      const a = scored.find((c) => c.ticker === 'DTE1')!.compositeScore;
-      const b = scored.find((c) => c.ticker === 'DTE2')!.compositeScore;
-
-      // Identical real debt-to-equity should score identically regardless of whether
-      // the price happened to load — that's exactly what "removing data quality from
-      // the health factor" means.
-      expect(a).toBe(b);
+      expect(json.thesesRun).toBe(1);
+      expect(json.companies[0].convergenceScore).toBe(1); // still reported, just not scored
     });
   });
+
+  describe('Partial thesis failure in POST /api/discover (bug B4)', () => {
+    it('reports the failed thesis and computes convergence over the theses that succeeded', async () => {
+      vi.mocked(claudeService.discoverCompaniesFromAI)
+        .mockImplementationOnce(async () => [
+          { ticker: 'AAPL', companyName: 'Apple Inc.', rationale: 'Fits 1', relevanceScore: 8 },
+        ])
+        .mockImplementationOnce(async () => [
+          { ticker: 'AAPL', companyName: 'Apple Inc.', rationale: 'Fits 2', relevanceScore: 8 },
+          { ticker: 'MSFT', companyName: 'Microsoft Corp.', rationale: 'Fits 2 only', relevanceScore: 7 },
+        ])
+        .mockImplementationOnce(async () => {
+          throw new Error('Claude overloaded');
+        });
+      vi.mocked(tickerValidator.validateTickers).mockResolvedValue({ valid: ['AAPL', 'MSFT'], invalid: [], bypassed: false });
+
+      const response = await discoverPOST(
+        new NextRequest('http://localhost:3000/api/discover', {
+          method: 'POST',
+          body: JSON.stringify({ trends: ['One', 'Two', 'Three'], filters: { exchange: [], marketCap: [] } }),
+        })
+      );
+      expect(response.status).toBe(200);
+      const json = await response.json();
+      expect(json.failedTrends).toEqual(['Three']);
+      const companies = json.companies as ScoredCompanyData[];
+      // AAPL matched both theses that ran: 2 of 2, not 2 of 3
+      expect(companies.find((c) => c.ticker === 'AAPL')?.convergenceScore).toBe(1);
+      expect(companies.find((c) => c.ticker === 'MSFT')?.convergenceScore).toBe(0.5);
+      // thesesRun counts only the theses that succeeded
+      expect(json.thesesRun).toBe(2);
+    });
+
+    it('returns an empty failedTrends list when every thesis succeeds', async () => {
+      vi.mocked(claudeService.discoverCompaniesFromAI).mockResolvedValue([
+        { ticker: 'AAPL', companyName: 'Apple Inc.', rationale: 'Fits', relevanceScore: 8 },
+      ]);
+      vi.mocked(tickerValidator.validateTickers).mockResolvedValue({ valid: ['AAPL'], invalid: [], bypassed: false });
+      const response = await discoverPOST(
+        new NextRequest('http://localhost:3000/api/discover', {
+          method: 'POST',
+          body: JSON.stringify({ trends: ['One', 'Two'], filters: { exchange: [], marketCap: [] } }),
+        })
+      );
+      const json = await response.json();
+      expect(json.failedTrends).toEqual([]);
+      expect(json.thesesRun).toBe(2);
+    });
+
+    it('fails the request with a clear error naming the theses when all of them fail', async () => {
+      vi.mocked(claudeService.discoverCompaniesFromAI).mockRejectedValue(new Error('down'));
+      const response = await discoverPOST(
+        new NextRequest('http://localhost:3000/api/discover', {
+          method: 'POST',
+          body: JSON.stringify({ trends: ['One', 'Two'], filters: { exchange: [], marketCap: [] } }),
+        })
+      );
+      expect(response.status).toBe(502);
+      const json = await response.json();
+      expect(json.error).toContain('"One"');
+      expect(json.error).toContain('"Two"');
+      expect(json.failedTrends).toEqual(['One', 'Two']);
+    });
+  });
+  // Composite scoring tests live in scoring.test.ts (Phase C rewrite).
 });

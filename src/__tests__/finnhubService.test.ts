@@ -50,11 +50,40 @@ describe('Finnhub service', () => {
       expect(normalizeMetrics(null)).toEqual({
         marketCap: null,
         peRatio: null,
+        lossMaking: null,
+        priceToSales: null,
+        preRevenue: null,
         revenueGrowthYoY: null,
         debtToEquity: null,
         freeCashFlowDerived: null,
         priceReturn52Week: null,
+        priceReturn26Week: null,
       });
+    });
+
+    // Shapes below mirror live /stock/metric responses checked on 2026-11-17.
+    it('loss-maker with revenue (IONQ-like): P/E null, flagged loss-making, P/S kept', () => {
+      const result = normalizeMetrics({ peTTM: null, epsTTM: -4.3169, psTTM: 46.4091, revenuePerShareTTM: 0.6704 });
+      expect(result.peRatio).toBeNull();
+      expect(result.lossMaking).toBe(true);
+      expect(result.priceToSales).toBe(46.4091);
+      expect(result.preRevenue).toBe(false);
+    });
+
+    it('pre-revenue (QS-like): zero revenue per share and no P/S -> preRevenue', () => {
+      const result = normalizeMetrics({ peTTM: null, epsTTM: -0.6258, revenuePerShareTTM: 0, revenuePerShareAnnual: 0 });
+      expect(result.priceToSales).toBeNull();
+      expect(result.preRevenue).toBe(true);
+    });
+
+    it('does not assume pre-revenue when the revenue fields are simply absent', () => {
+      const result = normalizeMetrics({ epsTTM: 1.2 });
+      expect(result.preRevenue).toBeNull();
+      expect(result.lossMaking).toBe(false);
+    });
+
+    it('keeps the 26-week price return for the rally fallback', () => {
+      expect(normalizeMetrics({ '26WeekPriceReturnDaily': -56.29 }).priceReturn26Week).toBe(-56.29);
     });
   });
 

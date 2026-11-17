@@ -1,9 +1,27 @@
 import React, { useState } from 'react';
-import { TrendResearchReport } from '@/lib/types';
+import { MentionedCompany, TrendResearchReport } from '@/lib/types';
+
+/** Plain-English reason a mentioned company's ticker couldn't be trusted (bug B5). */
+function unverifiedLabel(comp: MentionedCompany): string {
+  switch (comp.unverifiedReason) {
+    case 'not_listed':
+      return 'Not a listed US security (private, foreign, OTC, or wrong ticker)';
+    case 'name_mismatch':
+      return `Ticker belongs to "${comp.listingName ?? 'another company'}", not this company`;
+    case 'directory_unavailable':
+      return 'Listing directory unavailable — could not check this ticker';
+    default:
+      return 'Not checked (scan from before ticker verification)';
+  }
+}
 
 interface ResearchReportProps {
   report: TrendResearchReport & { scanId: string };
-  onLoadThesis: (thesis: string) => void;
+  /**
+   * loadedId = id of the audit record logged for this load (null if logging failed). The
+   * page keeps it so the search this thesis leads to can be written back (bug B9).
+   */
+  onLoadThesis: (thesis: string, loadedId: string | null) => void;
 }
 
 export const ResearchReport: React.FC<ResearchReportProps> = ({ report, onLoadThesis }) => {
@@ -82,7 +100,7 @@ export const ResearchReport: React.FC<ResearchReportProps> = ({ report, onLoadTh
     setIsLoadingLoad(thesisStatement);
     try {
       // Log thesis load event to DB
-      await fetch('/api/research/load', {
+      const res = await fetch('/api/research/load', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -90,10 +108,11 @@ export const ResearchReport: React.FC<ResearchReportProps> = ({ report, onLoadTh
           thesis: thesisStatement
         })
       });
-      onLoadThesis(thesisStatement);
+      const logged = res.ok ? ((await res.json()) as { id?: string }) : null;
+      onLoadThesis(thesisStatement, logged?.id ?? null);
     } catch (err) {
       console.warn('Failed to log loaded thesis event:', err);
-      onLoadThesis(thesisStatement); // Proceed anyway
+      onLoadThesis(thesisStatement, null); // Proceed anyway, just unlinked
     } finally {
       setIsLoadingLoad(null);
     }
@@ -143,10 +162,10 @@ export const ResearchReport: React.FC<ResearchReportProps> = ({ report, onLoadTh
                 <div className="space-y-2 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className={`text-[9px] font-mono px-2 py-0.5 rounded uppercase font-bold tracking-wider ${getConvergenceBadgeStyle(thesis.convergenceType)}`}>
-                      {thesis.convergenceType.replace('_', ' ')}
+                      {thesis.convergenceType === 'unknown' ? 'type unknown' : thesis.convergenceType.replace('_', ' ')}
                     </span>
                     <span className={`text-[9px] font-mono px-2 py-0.5 rounded border ${getMaturityStyle(thesis.maturity)}`}>
-                      {thesis.maturity}
+                      {thesis.maturity === 'unknown' ? 'Maturity unknown' : thesis.maturity}
                     </span>
                     <span className={`text-[9px] font-mono px-2 py-0.5 rounded border ${getConfidenceStyle(thesis.confidence)}`}>
                       CONF: {thesis.confidence}
@@ -210,7 +229,7 @@ export const ResearchReport: React.FC<ResearchReportProps> = ({ report, onLoadTh
                         <div key={i} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 rounded-lg bg-zinc-950 border border-zinc-900 font-mono text-[11px]">
                           <div className="flex items-start sm:items-center gap-2">
                             <span className={`text-[9px] px-1.5 py-0.5 rounded uppercase font-bold ${getSourceTypeStyle(src.sourceType)}`}>
-                              {src.sourceType.replace('_', ' ')}
+                              {src.sourceType === 'unknown' ? 'source' : src.sourceType.replace('_', ' ')}
                             </span>
                             <a
                               href={src.url}
@@ -275,7 +294,21 @@ export const ResearchReport: React.FC<ResearchReportProps> = ({ report, onLoadTh
                     <tr key={idx} className="group hover:bg-zinc-950/20">
                       <td className="py-3 pr-4">
                         <div className="font-bold text-zinc-200">{comp.name}</div>
-                        <div className="text-[10px] text-zinc-500 mt-0.5">{comp.ticker}</div>
+                        <div className="text-[10px] text-zinc-500 mt-0.5 flex flex-wrap items-center gap-1.5">
+                          <span>{comp.ticker || '—'}</span>
+                          {comp.tickerStatus === 'verified' ? (
+                            <span className="text-[9px] text-brand-green border border-brand-green/20 bg-brand-green/5 rounded px-1 py-px" title={comp.listingName ?? undefined}>
+                              ✓ VERIFIED
+                            </span>
+                          ) : (
+                            <span className="text-[9px] text-amber-400 border border-amber-900/40 bg-amber-950/20 rounded px-1 py-px" title={unverifiedLabel(comp)}>
+                              UNVERIFIED
+                            </span>
+                          )}
+                        </div>
+                        {comp.tickerStatus !== 'verified' && (
+                          <p className="text-[10px] text-amber-400/80 mt-0.5 font-sans">{unverifiedLabel(comp)}</p>
+                        )}
                         <p className="text-[10px] text-zinc-400 leading-relaxed font-sans mt-1">
                           {comp.context}
                         </p>
@@ -284,6 +317,10 @@ export const ResearchReport: React.FC<ResearchReportProps> = ({ report, onLoadTh
                         <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${getMarketCapStyle(comp.marketCapTier)}`}>
                           {comp.marketCapTier}
                         </span>
+                        {/* Real tier from Finnhub market cap, or Gemini's guess labeled as such */}
+                        {comp.marketCapTierSource !== 'finnhub' && (
+                          <div className="text-[9px] text-zinc-500 mt-1">AI estimate</div>
+                        )}
                       </td>
                       <td className="py-3 align-top text-center whitespace-nowrap">
                         {comp.recentRally === null ? (

@@ -21,6 +21,8 @@ model Search {
   trends        String[]
   filters       Json
   trendAnalysis Json
+  /// Weights + theses-run count used to score this snapshot (Phase C). Null on older rows.
+  scoringConfig Json?
   results       SearchResult[]
 
   @@map("searches")
@@ -51,7 +53,9 @@ model WatchlistItem {
   ticker         String   @unique
   companyName    String
   addedAt        DateTime @default(now())
-  priceAtAdd     Float
+  /// Price when starred (cost basis). Null = no real price was available then, so
+  /// gain/loss shows N/A. Never 0 (bug B8: 0 used to be stored and blanked gain/loss forever).
+  priceAtAdd     Float?
   sourceSearchId String?
   notes          String?
   tags           String[]
@@ -115,4 +119,17 @@ model CacheEntry {
 
   @@index([expiresAt])
   @@map("cache_entries")
+}
+
+/// Running total of today's ESTIMATED AI spend, one row per UTC day (Phase E, bug B6).
+/// Its own table (not a cache_entries row) so each AI call can add to it with one atomic
+/// `UPDATE ... SET costMicroUsd = costMicroUsd + n` instead of read-add-write, which lost
+/// updates when discovery fired several AI calls at once. Stored as whole micro-dollars
+/// (1 = $0.000001) so the sum is exact integer math, not floating-point drift.
+model DailySpend {
+  day          String   @id // YYYY-MM-DD, UTC
+  costMicroUsd BigInt   @default(0)
+  updatedAt    DateTime @updatedAt
+
+  @@map("daily_spend")
 }

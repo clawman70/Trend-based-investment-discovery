@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as researchPOST } from '../app/api/research/route';
-import { POST as loadPOST } from '../app/api/research/load/route';
+import { POST as loadPOST, PATCH as loadPATCH } from '../app/api/research/load/route';
 import { memoryResearchScans, memoryResearchLoadedTheses } from '../lib/memoryStore';
 import * as geminiService from '../lib/geminiService';
 
@@ -57,6 +57,28 @@ describe('Phase 5 — Automated Research Engine Tests', () => {
       expect(json.error).toContain('not configured');
       expect(json.executiveSummary).toBeUndefined();
       expect(memoryResearchScans.length).toBe(0);
+    });
+
+    it('runs every mentioned company through the ticker check before returning (bug B5)', async () => {
+      const savedKey = process.env.FINNHUB_API_KEY;
+      delete process.env.FINNHUB_API_KEY; // no directory available offline -> nothing can be verified
+      vi.mocked(geminiService.generateTrendResearchReport).mockResolvedValue({
+        isDemo: false,
+        executiveSummary: 'S',
+        scanDate: '2026-11-17',
+        domainsScanned: ['AI'],
+        candidateTheses: [],
+        companiesMentioned: [{ name: 'Fake Co', ticker: 'FAKEQ', marketCapTier: 'small', context: '', recentRally: null }],
+        adjacentSignals: [],
+      });
+      try {
+        const json = await (await scan({ domains: ['AI'], mode: 'guided', customPrompt: null })).json();
+        expect(json.companiesMentioned[0].tickerStatus).toBe('unverified');
+        expect(json.companiesMentioned[0].recentRally).toBeNull();
+        expect(json.companiesMentioned[0].marketCapTierSource).toBe('ai_estimate');
+      } finally {
+        if (savedKey !== undefined) process.env.FINNHUB_API_KEY = savedKey;
+      }
     });
 
     it('should return 502 (not a mock report) when the AI call fails', async () => {
@@ -119,6 +141,34 @@ describe('Phase 5 — Automated Research Engine Tests', () => {
       expect(memoryResearchLoadedTheses.length).toBe(1);
       expect(memoryResearchLoadedTheses[0].scanId).toBe('test-scan-uuid');
       expect(memoryResearchLoadedTheses[0].thesis).toBe('Edge computing converging with drone swarms');
+      // The id comes back so the page can link the search this thesis leads to (B9)
+      expect(json.id).toBe(memoryResearchLoadedTheses[0].id);
+      expect(memoryResearchLoadedTheses[0].searchId).toBeNull();
+    });
+  });
+
+  describe('Linking a loaded thesis to the search it led to (bug B9, PATCH /api/research/load)', () => {
+    const patch = (body: object) =>
+      loadPATCH(new NextRequest('http://localhost:3000/api/research/load', { method: 'PATCH', body: JSON.stringify(body) }));
+
+    it('writes the search id back onto the loaded-thesis record', async () => {
+      const logged = await loadPOST(
+        new NextRequest('http://localhost:3000/api/research/load', {
+          method: 'POST',
+          body: JSON.stringify({ scanId: 'scan-1', thesis: 'Solid-state batteries for grid storage' }),
+        })
+      );
+      const { id } = await logged.json();
+
+      const response = await patch({ id, searchId: 'search-123' });
+      expect(response.status).toBe(200);
+      expect(memoryResearchLoadedTheses[0].searchId).toBe('search-123');
+    });
+
+    it('returns 404 for an unknown record and 400 when ids are missing', async () => {
+      expect((await patch({ id: 'nope', searchId: 'search-123' })).status).toBe(404);
+      expect((await patch({ id: 'x' })).status).toBe(400);
+      expect((await patch({ searchId: 'search-123' })).status).toBe(400);
     });
   });
 });

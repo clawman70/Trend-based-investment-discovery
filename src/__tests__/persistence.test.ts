@@ -4,7 +4,9 @@ import { GET as historyGET, POST as historyPOST, DELETE as historyDELETE } from 
 import { GET as watchlistGET, POST as watchlistPOST, PUT as watchlistPUT, DELETE as watchlistDELETE } from '../app/api/watchlist/route';
 import { GET as portfoliosGET, POST as portfoliosPOST, DELETE as portfoliosDELETE } from '../app/api/portfolios/route';
 import { ScoredCompanyData } from '../lib/types';
+import { buildScoringConfig, calculateCompanyScores } from '../lib/scoring';
 import * as finnhubService from '../lib/finnhubService';
+import * as yahooService from '../lib/yahooService';
 import type { FinnhubQuote } from '../lib/finnhubService';
 import {
   memorySearches,
@@ -17,11 +19,20 @@ import {
 // Ensure database availability check always returns false for tests to exercise the fallback memory store.
 vi.mock('../lib/dbHelper', () => ({
   isDbAvailable: vi.fn().mockResolvedValue(false),
+  getCachedData: vi.fn().mockResolvedValue(null),
+  setCachedData: vi.fn(),
+}));
+
+// SPY history for the "vs SPY" columns (Phase D); null = Yahoo unavailable -> N/A
+vi.mock('../lib/yahooService', () => ({
+  fetchDailyCloses: vi.fn().mockResolvedValue(null),
+  fetchSplitEvents: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../lib/finnhubService', () => ({
   isFinnhubConfigured: vi.fn(() => true),
   fetchQuotes: vi.fn(),
+  fetchQuote: vi.fn(),
 }));
 
 const quotes = (prices: Record<string, number>) =>
@@ -46,7 +57,6 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       const mockResult: ScoredCompanyData = {
         ticker: 'MSFT',
         companyName: 'Microsoft Corp.',
-        rationale: 'Office AI integration',
         relevanceScore: 9,
         trendsMatched: ['AI Tools'],
         convergenceScore: 1.0,
@@ -98,6 +108,9 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       expect(getSingleJson.search.id).toBe(savedSearchId);
       expect(getSingleJson.companies.length).toBe(1);
       expect(getSingleJson.companies[0].ticker).toBe('MSFT');
+      // Bug B1: the saved row's rationale is built from the per-thesis map, not left empty
+      expect(memorySearchResults[0].rationale).toBe('Office AI integration');
+      expect(getSingleJson.companies[0].rationales).toEqual({ 'AI Tools': 'Office AI integration' });
 
       // 4. Delete the search
       const deleteRequest = new NextRequest(`http://localhost:3000/api/history?id=${savedSearchId}`, {
@@ -110,10 +123,69 @@ describe('Phase 3 — Persistence Layer Tests', () => {
     });
   });
 
+  describe('Saved scoring config with history snapshots (Phase C step 7)', () => {
+    it('saves the weights, theses-run count and scoring inputs, and returns them on restore', async () => {
+      const weights = { relevance: 10, convergence: 40, valuation: 20, health: 10, growth: 20 };
+      const scored = calculateCompanyScores(
+        [
+          {
+            ticker: 'IONQ', companyName: 'IonQ', relevanceScore: 8, trendsMatched: ['Q'], convergenceScore: 1,
+            rationales: { Q: 'quantum' }, stockPrice: 30, marketCap: 1e10, exchange: 'NYSE',
+            dataQuality: { priceSource: 'live' }, compositeScore: 0, peRatio: null, lossMaking: true,
+            priceToSales: 46.4, preRevenue: false, revenueGrowthYoY: 370.6, debtToEquity: 0, change6M: -48.3, rallied6M: false,
+          },
+        ],
+        weights,
+        { thesesRun: 1 }
+      );
+
+      const postResponse = await historyPOST(
+        new NextRequest('http://localhost:3000/api/history', {
+          method: 'POST',
+          body: JSON.stringify({
+            trends: ['Q'],
+            filters: {},
+            trendAnalysis: {},
+            scoringConfig: buildScoringConfig(weights, 1),
+            results: scored,
+          }),
+        })
+      );
+      const { id } = await postResponse.json();
+
+      const restored = await (await historyGET(new NextRequest(`http://localhost:3000/api/history?id=${id}`))).json();
+      expect(restored.search.scoringConfig).toEqual({ weights, thesesRun: 1, method: 'percentile-v1' });
+      const [row] = restored.companies;
+      expect(row).toMatchObject({
+        priceToSales: 46.4, preRevenue: false, lossMaking: true, revenueGrowthYoY: 370.6, change6M: -48.3, rallied6M: false,
+      });
+      expect(row.scoreBreakdown.factors.convergence.status).toBe('excluded');
+      // Re-scoring the restored rows with the saved config reproduces the saved score
+      const rescored = calculateCompanyScores(restored.companies, restored.search.scoringConfig.weights, {
+        thesesRun: restored.search.scoringConfig.thesesRun,
+      });
+      expect(rescored[0].compositeScore).toBe(scored[0].compositeScore);
+    });
+
+    it('older snapshots without a config come back with scoringConfig null and missing fields as null', async () => {
+      const postResponse = await historyPOST(
+        new NextRequest('http://localhost:3000/api/history', {
+          method: 'POST',
+          body: JSON.stringify({ trends: ['Old'], filters: {}, trendAnalysis: {}, scoringConfig: 'garbage', results: [] }),
+        })
+      );
+      const { id } = await postResponse.json();
+      const restored = await (await historyGET(new NextRequest(`http://localhost:3000/api/history?id=${id}`))).json();
+      expect(restored.search.scoringConfig).toBeNull();
+    });
+  });
+
   describe('Watchlist API (POST & GET & PUT & DELETE /api/watchlist)', () => {
     it('should CRUD watchlisted tickers and evaluate gains relative to cost', async () => {
       // Mock Finnhub live quotes
       vi.mocked(finnhubService.fetchQuotes).mockResolvedValue(quotes({ AAPL: 180.0 }));
+      // The cost basis is the server-side quote at starring time ($100), not the browser's price
+      vi.mocked(finnhubService.fetchQuote).mockReset().mockResolvedValue({ c: 100.0 } as FinnhubQuote);
 
       // 1. Add asset to watchlist (cost basis $100.0)
       const postRequest = new NextRequest('http://localhost:3000/api/watchlist', {
@@ -121,7 +193,7 @@ describe('Phase 3 — Persistence Layer Tests', () => {
         body: JSON.stringify({
           ticker: 'AAPL',
           companyName: 'Apple Inc.',
-          priceAtAdd: 100.0,
+          priceAtAdd: 95.0, // stale browser price: ignored
           notes: 'Init rationale',
           tags: ['Hardware'],
         }),
@@ -164,6 +236,128 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       const deleteResponse = await watchlistDELETE(deleteRequest);
       expect(deleteResponse.status).toBe(200);
       expect(memoryWatchlistItems.length).toBe(0);
+    });
+
+    it('stores the search a starred company came from (bug B9)', async () => {
+      const response = await watchlistPOST(
+        new NextRequest('http://localhost:3000/api/watchlist', {
+          method: 'POST',
+          body: JSON.stringify({ ticker: 'qs', companyName: 'QuantumScape', priceAtAdd: 6.5, sourceSearchId: 'search-abc' }),
+        })
+      );
+      expect(response.status).toBe(200);
+      expect(memoryWatchlistItems[0].sourceSearchId).toBe('search-abc');
+    });
+  });
+
+  describe('Return vs SPY in the Watchlist and Portfolio views (Phase D step 5)', () => {
+    const SPY_NOW = 732.44;
+    const SPY_SEPT_15 = 757.39;
+    const spyReturn = ((SPY_NOW - SPY_SEPT_15) / SPY_SEPT_15) * 100; // about -3.29%
+
+    beforeEach(() => {
+      vi.mocked(yahooService.fetchDailyCloses).mockResolvedValue([
+        { date: new Date('2026-09-15T13:30:00Z'), close: SPY_SEPT_15 },
+      ]);
+      vi.mocked(finnhubService.fetchQuotes).mockResolvedValue(quotes({ AAPL: 120, SPY: SPY_NOW }));
+      memoryWatchlistItems.push(
+        // Starred Tuesday 2026-09-15 at 15:00 ET at $100
+        { id: 'w1', ticker: 'AAPL', companyName: 'Apple', addedAt: new Date('2026-09-15T19:00:00Z'), priceAtAdd: 100, sourceSearchId: null, notes: null, tags: [] },
+        // No cost basis: gain/loss N/A, so vs SPY must be N/A too
+        { id: 'w2', ticker: 'MSFT', companyName: 'Microsoft', addedAt: new Date('2026-09-15T19:00:00Z'), priceAtAdd: null, sourceSearchId: null, notes: null, tags: [] }
+      );
+    });
+
+    it('watchlist: gain/loss minus SPY over the same window, N/A without a cost basis', async () => {
+      const json = await (await watchlistGET()).json();
+      const aapl = json.find((i: { ticker: string }) => i.ticker === 'AAPL');
+      expect(aapl.gainLossPercent).toBeCloseTo(20);
+      expect(aapl.benchmarkStartDate).toBe('2026-09-15');
+      expect(aapl.benchmarkReturnPercent).toBeCloseTo(spyReturn, 6);
+      expect(aapl.vsBenchmarkPercent).toBeCloseTo(20 - spyReturn, 6);
+
+      const msft = json.find((i: { ticker: string }) => i.ticker === 'MSFT');
+      expect(msft.gainLossPercent).toBeNull();
+      expect(msft.vsBenchmarkPercent).toBeNull();
+      // SPY rides in the same quote batch: no separate call
+      expect(finnhubService.fetchQuotes).toHaveBeenCalledWith(expect.arrayContaining(['AAPL', 'MSFT', 'SPY']));
+    });
+
+    it('portfolio items get the same comparison', async () => {
+      memoryTrendPortfolios.push({ id: 'p1', name: 'Test', description: null, createdAt: new Date() });
+      memoryPortfolioItems.push({ id: 'pi1', portfolioId: 'p1', watchlistId: 'w1' });
+      const json = await (await portfoliosGET()).json();
+      const item = json[0].items[0];
+      expect(item.ticker).toBe('AAPL');
+      expect(item.vsBenchmarkPercent).toBeCloseTo(20 - spyReturn, 6);
+    });
+
+    it('is N/A when SPY history is unavailable', async () => {
+      vi.mocked(yahooService.fetchDailyCloses).mockResolvedValue(null);
+      const json = await (await watchlistGET()).json();
+      const aapl = json.find((i: { ticker: string }) => i.ticker === 'AAPL');
+      expect(aapl.gainLossPercent).toBeCloseTo(20);
+      expect(aapl.vsBenchmarkPercent).toBeNull();
+    });
+  });
+
+  describe('Watchlist cost basis when the price is missing (bug B8)', () => {
+    const star = (body: object) =>
+      watchlistPOST(new NextRequest('http://localhost:3000/api/watchlist', { method: 'POST', body: JSON.stringify(body) }));
+
+    it('fetches a live quote server-side when the browser sends no price (or 0)', async () => {
+      vi.mocked(finnhubService.fetchQuote).mockResolvedValue({ c: 42.5 } as FinnhubQuote);
+      await star({ ticker: 'aapl', companyName: 'Apple Inc.', priceAtAdd: 0 });
+      expect(finnhubService.fetchQuote).toHaveBeenCalledWith('AAPL');
+      expect(memoryWatchlistItems[0].priceAtAdd).toBe(42.5);
+
+      await star({ ticker: 'MSFT', companyName: 'Microsoft Corp.', priceAtAdd: null });
+      expect(memoryWatchlistItems.find((i) => i.ticker === 'MSFT')?.priceAtAdd).toBe(42.5);
+    });
+
+    it('always uses a fresh server-side quote, never the browser’s possibly stale price (review finding)', async () => {
+      // The browser's price can be hours or days old, while "vs SPY" starts from the
+      // starring time: the two must describe the same moment
+      vi.mocked(finnhubService.fetchQuote).mockReset().mockResolvedValue({ c: 42.5 } as FinnhubQuote);
+      await star({ ticker: 'AAPL', companyName: 'Apple Inc.', priceAtAdd: 100 });
+      expect(finnhubService.fetchQuote).toHaveBeenCalledWith('AAPL');
+      expect(memoryWatchlistItems[0].priceAtAdd).toBe(42.5);
+    });
+
+    it('stores N/A, not the browser’s price, when no quote is available', async () => {
+      vi.mocked(finnhubService.fetchQuote).mockReset().mockResolvedValue(null);
+      await star({ ticker: 'AAPL', companyName: 'Apple Inc.', priceAtAdd: 100 });
+      expect(memoryWatchlistItems[0].priceAtAdd).toBeNull();
+    });
+
+    it('stores null (never 0) when the quote also fails, and gain/loss shows as N/A', async () => {
+      vi.mocked(finnhubService.fetchQuote).mockRejectedValue(new Error('Finnhub down'));
+      const res = await star({ ticker: 'AAPL', companyName: 'Apple Inc.' });
+      expect(res.status).toBe(200);
+      expect(memoryWatchlistItems[0].priceAtAdd).toBeNull();
+
+      vi.mocked(finnhubService.fetchQuotes).mockResolvedValue(quotes({ AAPL: 180 }));
+      const list = await (await watchlistGET()).json();
+      expect(list[0].priceAtAdd).toBeNull();
+      expect(list[0].currentPrice).toBe(180);
+      expect(list[0].gainLossPercent).toBeNull();
+    });
+
+    it('a null cost basis is N/A in a portfolio and left out of its totals', async () => {
+      memoryWatchlistItems.push(
+        { id: 'wl-a', ticker: 'AAPL', companyName: 'Apple Inc.', addedAt: new Date(), priceAtAdd: null, sourceSearchId: null, notes: null, tags: [] },
+        { id: 'wl-m', ticker: 'MSFT', companyName: 'Microsoft Corp.', addedAt: new Date(), priceAtAdd: 100, sourceSearchId: null, notes: null, tags: [] }
+      );
+      memoryTrendPortfolios.push({ id: 'p1', name: 'Test', description: null, createdAt: new Date() });
+      memoryPortfolioItems.push({ id: 'pi1', portfolioId: 'p1', watchlistId: 'wl-a' }, { id: 'pi2', portfolioId: 'p1', watchlistId: 'wl-m' });
+      vi.mocked(finnhubService.fetchQuotes).mockResolvedValue(quotes({ AAPL: 180, MSFT: 150 }));
+
+      const [portfolio] = await (await portfoliosGET()).json();
+      const aapl = portfolio.items.find((i: { ticker: string }) => i.ticker === 'AAPL');
+      expect(aapl.priceAtAdd).toBeNull();
+      expect(aapl.gainLossPercent).toBeNull();
+      // Only MSFT counts: (150 - 100) / 100 = +50%
+      expect(portfolio.gainLossPercent).toBeCloseTo(50);
     });
   });
 

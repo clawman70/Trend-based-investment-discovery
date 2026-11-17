@@ -27,8 +27,9 @@
  * claudeService.ts does against Claude's web_search results.
  */
 import { GoogleGenAI, Type, GenerateContentResponse } from '@google/genai';
-import { CandidateThesis, MentionedCompany, Source, TrendResearchReport } from './types';
-import { recordUsage } from './usageTracker';
+import { CandidateThesis, Source, TrendResearchReport } from './types';
+import { parseResearchOutput, ParsedResearchOutput } from './researchSchema';
+import { geminiUsageComponents, recordUsage } from './usageTracker';
 
 const apiKey = process.env.GOOGLE_GENAI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
@@ -132,15 +133,6 @@ const structuredReportSchema = {
   required: ['executiveSummary', 'candidateTheses', 'companiesMentioned', 'adjacentSignals'],
 };
 
-interface ParsedResearchOutput {
-  executiveSummary: string;
-  candidateTheses: CandidateThesis[];
-  // recentRally is deliberately not asked of the model — it's computed from real price
-  // history in the research route instead. See MentionedCompany in types.ts.
-  companiesMentioned: Omit<MentionedCompany, 'recentRally'>[];
-  adjacentSignals: string[];
-}
-
 /** Real grounding sources Google Search actually returned this turn, keyed by URL. Exported for tests. */
 export function collectGroundingResults(response: GenerateContentResponse): Map<string, { title: string }> {
   const results = new Map<string, { title: string }>();
@@ -198,9 +190,12 @@ async function runGroundedSearch(searchPrompt: string, maxAttempts = 3): Promise
       })
     );
 
-    await recordUsage('gemini', response.usageMetadata?.promptTokenCount ?? 0, response.usageMetadata?.candidatesTokenCount ?? 0);
+    const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
+    const chunkCount = groundingMetadata?.groundingChunks?.length ?? 0;
+    // Billed as a grounded request when the model actually searched (queries or results present)
+    const grounded = chunkCount > 0 || (groundingMetadata?.webSearchQueries?.length ?? 0) > 0;
+    await recordUsage('gemini', GEMINI_MODEL, geminiUsageComponents(response.usageMetadata, { grounded }));
 
-    const chunkCount = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.length ?? 0;
     if (chunkCount >= MIN_GROUNDING_CHUNKS) {
       return response;
     }
@@ -244,14 +239,16 @@ ${narrative}`;
     })
   );
 
-  await recordUsage('gemini', response.usageMetadata?.promptTokenCount ?? 0, response.usageMetadata?.candidatesTokenCount ?? 0);
+  await recordUsage('gemini', GEMINI_MODEL, geminiUsageComponents(response.usageMetadata, { grounded: false }));
 
   const jsonString = response.text?.trim();
   if (!jsonString) {
     throw new Error('Research scan failed: Gemini returned an empty response while structuring the report.');
   }
 
-  return JSON.parse(jsonString) as ParsedResearchOutput;
+  // Validated, not trusted: off-list enum values become 'unknown', broken structure fails
+  // the scan with a clear error (bug B10 — see src/lib/researchSchema.ts for the policy).
+  return parseResearchOutput(jsonString);
 }
 
 export const generateTrendResearchReport = async (
@@ -297,8 +294,8 @@ After searching, write a detailed narrative covering: an executive summary; 2-4 
     scanDate: scanDateIso,
     domainsScanned: domains,
     candidateTheses: reconcileSources(parsed.candidateTheses, realGroundingResults),
-    // recentRally: null here — the research route fills in the real, price-history-based
-    // value for each company before this report reaches the client.
+    // recentRally: null and the ticker check are filled in by the research route
+    // (src/lib/researchVerification.ts) before this report reaches the client.
     companiesMentioned: parsed.companiesMentioned.map((c) => ({ ...c, recentRally: null })),
     adjacentSignals: parsed.adjacentSignals,
   };
