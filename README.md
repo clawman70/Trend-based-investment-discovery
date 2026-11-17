@@ -43,8 +43,7 @@ A Bloomberg-style research terminal. You describe a market trend in plain Englis
 
 **Watchlist:**
 - Starring a company saves why it was picked as the note. With several theses, each reason is labeled with its thesis.
-- The cost basis is the price on the day you starred it. If the price didn't load in the browser, the server fetches a live quote. If that also fails, the cost basis is saved as **N/A**, not $0, and gain/loss shows N/A. Portfolio totals leave those items out.
-- Starring from a search restored out of History uses **today's** price as the cost basis, not the old search-date price (that price belongs to the search, and the Scorecard already tracks it).
+- The cost basis is the live price at the moment you star it, fetched by the server right then. The price shown in the browser is never used, because it can be hours or days old (a tab left open, or a search restored from History). If no live price is available, the cost basis is saved as **N/A**, not $0, and gain/loss shows N/A. Portfolio totals leave those items out.
 - Each starred company remembers which saved search it came from.
 - **vs SPY column** (Watchlist and Portfolios): the item's gain/loss minus what SPY did over the same window, from SPY's close on the day you starred it to now. Shown in "pts" (percentage points). Hover it to see SPY's own return. N/A when there's no cost basis, no price today, or no SPY close for that date. Unlike the Scorecard, the Watchlist does not adjust for stock splits.
 
@@ -100,7 +99,7 @@ The **SCORECARD** tab answers one question: since each saved search, did its pic
 
 Click **SHOW PICKS** on a search to see every pick: its price at the search, its price now, its return and its difference vs SPY.
 
-**Overall** rolls up every search that is at least 30 days old and shows the same four numbers. It also shows **top-scored half vs bottom-scored half**, which tests whether the score predicts anything. If the top half keeps beating the bottom half, the score is doing its job. If not, it isn't. Scores only rank companies *within* one search, so each search is split into halves first and the halves are then pooled. Scores are never compared across searches. With an odd number of picks, the middle one is left out so the halves are equal.
+**Overall** rolls up every search that is at least 30 days old and shows the same four numbers. It also shows **top-scored half vs bottom-scored half**, which tests whether the score predicts anything. If the top half keeps beating the bottom half, the score is doing its job. If not, it isn't. Scores only rank companies *within* one search, so each search is split into halves first and the halves are then pooled. Scores are never compared across searches. Picks sitting right on the dividing line belong to neither half, so they're left out and counted: the middle pick when the count is odd, plus any pick tied with the dividing score (otherwise tied picks would be sorted into a half alphabetically). The halves can then differ in size; each shows its own pick count.
 
 **Honesty rules**
 
@@ -108,13 +107,13 @@ Click **SHOW PICKS** on a search to see every pick: its price at the search, its
 - **Searches under 30 days old are left out of Overall.** They still appear in the list, marked "Not in overall". Otherwise a search from yesterday would drag every average toward zero.
 - **Excluded, not guessed.** A pick with no price saved at search time is left out and counted. So is a pick with no price today, which usually means it was delisted or renamed. A delisted stock may have gone to zero or been bought out, and the app can't know which. That means the figures can look somewhat better than reality, and the page says so.
 - **Price return only.** Dividends aren't included, for the picks or for SPY.
-- **Stock splits are adjusted.** If a pick splits after the search (common with micro-cap reverse splits), its old price is converted to today's shares so the split doesn't show as a fake gain or loss. If the split check fails, the pick is still counted unadjusted and labeled "split check unavailable".
+- **Stock splits are adjusted.** If a pick splits after the search (common with micro-cap reverse splits), its old price is converted to today's shares so the split doesn't show as a fake gain or loss. A split only counts once it's actually in today's price (before the open on split day, the price is still pre-split), and the split check is redone whenever the saved one is older than the latest trading session. If the split check fails, the pick is still counted unadjusted and labeled "split check unavailable".
 - **Not investment advice.** It's a record of past prices.
 
 **Which SPY price a search starts from.** The day the search ran, using SPY's closing price.
 - **Weekend or market holiday:** the nearest earlier trading day's close (a Saturday search starts from Friday's close).
 - **Before the 9:30am ET open:** the previous trading day's close, because that's the price the picks were saved at.
-- **Today, before the 4:30pm ET close is final:** SPY shows N/A until the close is in.
+- **Today, before 4:30pm ET:** SPY shows N/A until today's close is final. It never falls back to yesterday's close for a search made today.
 
 The pick's own start price is the one saved with the search. A search run during market hours is compared with that day's close, which is a small mismatch; on average it's the closest match available from daily data.
 
