@@ -17,6 +17,12 @@ export interface PriceHistoryGrowth {
   ticker: string;
   growth1Y: number | null;
   growth5Y: number | null;
+  /**
+   * 6-month price change in percent, from the SAME weekly history as growth1Y/5Y (no
+   * second Yahoo call). Used only for the Discovery "6M rally >30%" flag, never in the
+   * score. Optional because growth results cached before Phase C don't have it.
+   */
+  change6M?: number | null;
   growthSource: GrowthSource;
 }
 
@@ -55,7 +61,7 @@ export function calculateGrowth(
   now: Date = new Date()
 ): PriceHistoryGrowth {
   if (!(currentPrice > 0) || closes.length === 0) {
-    return { ticker, growth1Y: null, growth5Y: null, growthSource: 'insufficient_history' };
+    return { ticker, growth1Y: null, growth5Y: null, change6M: null, growthSource: 'insufficient_history' };
   }
 
   const oneYearAgo = new Date(now);
@@ -70,16 +76,23 @@ export function calculateGrowth(
   const growth1Y = pct(price1Y);
   const growth5Y = pct(price5Y);
 
+  // Same rule as the Research tab's rally check, applied to the weekly bars already in hand
+  const change6M = calculateSixMonthRally(ticker, currentPrice, closes, now).changePercent;
+
   return {
     ticker,
     growth1Y,
     growth5Y,
+    change6M,
     growthSource: growth1Y !== null ? 'calculated' : 'insufficient_history',
   };
 }
 
 /** Yahoo uses dashes for share classes (BRK-B); Finnhub uses dots (BRK.B). */
 const toYahooSymbol = (ticker: string) => ticker.toUpperCase().replace(/\./g, '-');
+
+/** "Already priced in" rule shared by the Research tab and the Discovery flag: >30% in 6 months. */
+export const RALLY_THRESHOLD_PCT = 30;
 
 export interface SixMonthRally {
   ticker: string;
@@ -106,7 +119,7 @@ export function calculateSixMonthRally(
   }
 
   const changePercent = ((currentPrice - priceThen) / priceThen) * 100;
-  return { ticker, rallied: changePercent > 30, changePercent };
+  return { ticker, rallied: changePercent > RALLY_THRESHOLD_PCT, changePercent };
 }
 
 /** Whether a stock has rallied >30% over the last 6 months, computed from real price history — never an AI guess. */
@@ -172,6 +185,6 @@ export async function fetchPriceGrowth(ticker: string, currentPrice: number): Pr
     return calculateGrowth(symbol, currentPrice, closes);
   } catch (error) {
     console.warn(`[History] Yahoo chart failed for ${symbol}:`, error instanceof Error ? error.message : error);
-    return { ticker: symbol, growth1Y: null, growth5Y: null, growthSource: 'unavailable' };
+    return { ticker: symbol, growth1Y: null, growth5Y: null, change6M: null, growthSource: 'unavailable' };
   }
 }

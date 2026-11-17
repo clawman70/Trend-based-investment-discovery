@@ -30,7 +30,9 @@ vi.mock('../lib/finnhubService', async (importOriginal) => {
 });
 
 vi.mock('../lib/yahooService', () => ({
+  RALLY_THRESHOLD_PCT: 30,
   fetchPriceGrowth: vi.fn(),
+  fetchSixMonthRally: vi.fn(),
   fetchCompanyProfile: vi.fn(),
 }));
 
@@ -190,6 +192,61 @@ describe('API Route Handlers', () => {
       expect(row.growth1Y).toBe(12.5);
       expect(row.growth5Y).toBeNull();
       expect(row.dataQuality.growthSource).toBe('calculated');
+    });
+
+    it('carries the Phase C scoring inputs and the 6M rally flag from the same Yahoo history', async () => {
+      vi.mocked(finnhubService.fetchQuote).mockResolvedValue(quote(30));
+      // Loss-maker with revenue, as Finnhub returns it live (peTTM null, psTTM present)
+      vi.mocked(finnhubService.fetchMetrics).mockResolvedValue({
+        peTTM: null,
+        epsTTM: -0.37,
+        psTTM: 41.1,
+        revenuePerShareTTM: 1.35,
+        revenueGrowthTTMYoy: 59.03,
+        '26WeekPriceReturnDaily': -10,
+      });
+      vi.mocked(yahooService.fetchPriceGrowth).mockResolvedValue({
+        ticker: 'RKLB',
+        growth1Y: 36,
+        growth5Y: null,
+        change6M: 45,
+        growthSource: 'calculated',
+      });
+      vi.mocked(tickerValidator.getListing).mockResolvedValue(null);
+
+      const [row] = await (await enrich(['RKLB'])).json();
+      expect(row.peRatio).toBeNull();
+      expect(row.lossMaking).toBe(true);
+      expect(row.priceToSales).toBe(41.1);
+      expect(row.preRevenue).toBe(false);
+      expect(row.revenueGrowthYoY).toBe(59.03);
+      expect(row.change6M).toBe(45); // Yahoo history wins over Finnhub 26-week return
+      expect(row.rallied6M).toBe(true);
+      expect(yahooService.fetchPriceGrowth).toHaveBeenCalledTimes(1); // no second Yahoo call for the rally
+      expect(yahooService.fetchSixMonthRally).not.toHaveBeenCalled();
+    });
+
+    it('falls back to Finnhub 26-week return for the 6M flag, and leaves it null when neither exists', async () => {
+      vi.mocked(finnhubService.fetchQuote).mockResolvedValue(quote(10));
+      vi.mocked(finnhubService.fetchMetrics).mockResolvedValue({ '26WeekPriceReturnDaily': 12 });
+      vi.mocked(yahooService.fetchPriceGrowth).mockResolvedValue({
+        ticker: 'QQQQ',
+        growth1Y: null,
+        growth5Y: null,
+        change6M: null,
+        growthSource: 'unavailable',
+      });
+      vi.mocked(tickerValidator.getListing).mockResolvedValue(null);
+      const [row] = await (await enrich(['QQQQ'])).json();
+      expect(row.change6M).toBe(12);
+      expect(row.rallied6M).toBe(false);
+
+      vi.mocked(finnhubService.fetchMetrics).mockResolvedValue(null);
+      const [none] = await (await enrich(['NONE'])).json();
+      expect(none.change6M).toBeNull();
+      expect(none.rallied6M).toBeNull();
+      expect(none.priceToSales).toBeNull();
+      expect(none.revenueGrowthYoY).toBeNull();
     });
 
     it('should survive a failing upstream call without inventing data', async () => {

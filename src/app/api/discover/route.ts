@@ -162,6 +162,9 @@ export async function POST(request: NextRequest) {
       companies: finalCompanies,
       invalidTickers: validation.invalid,
       failedTrends,
+      // Theses that actually ran. The browser's scoring drops convergence when this is 1
+      // (decision D2): with one thesis every company's convergence would be the same 1.0.
+      thesesRun: succeededCount,
       validationMetrics: {
         totalDiscovered: uniqueTickers.size,
         validCount: validation.valid.length,

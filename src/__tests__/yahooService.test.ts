@@ -48,6 +48,22 @@ describe('Yahoo service', () => {
       expect(result.growth1Y).toBeCloseTo(25);
       expect(result.growth5Y).toBeNull();
     });
+
+    it('derives the 6-month change from the same weekly history (Discovery rally flag, Phase C)', () => {
+      const sixMonthsAgo = new Date(NOW);
+      sixMonthsAgo.setMonth(NOW.getMonth() - 6);
+      const closes = [
+        { date: new Date('2025-09-12'), close: 100 },
+        { date: sixMonthsAgo, close: 80 },
+      ];
+      const result = calculateGrowth('RALLY', 120, closes, NOW);
+      expect(result.change6M).toBeCloseTo(50);
+    });
+
+    it('leaves the 6-month change null when there is no bar near 6 months ago', () => {
+      const closes = [{ date: new Date('2025-09-12'), close: 100 }];
+      expect(calculateGrowth('GAP', 120, closes, NOW).change6M).toBeNull();
+    });
   });
 
   describe('calculateSixMonthRally', () => {
@@ -95,7 +111,7 @@ describe('Yahoo service', () => {
     it('returns unavailable instead of throwing when Yahoo fails', async () => {
       chartMock.mockRejectedValue(new Error('No data found, symbol may be delisted'));
       const result = await fetchPriceGrowth('ZZZQ', 10);
-      expect(result).toEqual({ ticker: 'ZZZQ', growth1Y: null, growth5Y: null, growthSource: 'unavailable' });
+      expect(result).toEqual({ ticker: 'ZZZQ', growth1Y: null, growth5Y: null, change6M: null, growthSource: 'unavailable' });
     });
   });
 
