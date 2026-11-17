@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { deleteWatchlistItem, listWatchlistItems, updateWatchlistItem, upsertWatchlistItem } from '@/lib/stores/watchlistStore';
 import { fetchQuote, fetchQuotes, isFinnhubConfigured } from '@/lib/finnhubService';
+import { compareWithBenchmark } from '@/lib/benchmark';
+import { BENCHMARK_TICKER } from '@/lib/trackRecord';
 
 /**
  * Cost basis for a newly starred ticker (bug B8). Uses the browser's price when it's a
@@ -36,7 +38,8 @@ export async function GET() {
 
     if (isFinnhubConfigured()) {
       try {
-        const quotes = await fetchQuotes(tickers);
+        // SPY rides along in the same batch (fetchQuotes de-duplicates) for the "vs SPY" column
+        const quotes = await fetchQuotes([...tickers, BENCHMARK_TICKER]);
         quotes.forEach((quote, symbol) => priceMap.set(symbol, quote.c));
       } catch (err) {
         console.error('Failed to fetch live prices for watchlist:', err);
@@ -44,7 +47,7 @@ export async function GET() {
     }
 
     // Assemble watchlist results with gain/loss % calculations
-    const enrichedWatchlist = items.map((item) => {
+    const withReturns = items.map((item) => {
       const currentPrice = priceMap.get(item.ticker.toUpperCase()) ?? null;
       const gainLossPercent = currentPrice !== null && item.priceAtAdd !== null && item.priceAtAdd > 0
         ? ((currentPrice - item.priceAtAdd) / item.priceAtAdd) * 100
@@ -56,6 +59,14 @@ export async function GET() {
         gainLossPercent,
       };
     });
+
+    // Phase D: the same gain/loss compared with SPY from the day each item was starred
+    // (same helper and rules as the Scorecard; N/A when either side is missing)
+    const comparisons = await compareWithBenchmark(
+      withReturns.map((item) => ({ since: new Date(item.addedAt), returnPercent: item.gainLossPercent })),
+      priceMap.get(BENCHMARK_TICKER) ?? null
+    );
+    const enrichedWatchlist = withReturns.map((item, i) => ({ ...item, ...comparisons[i] }));
 
     return NextResponse.json(enrichedWatchlist);
   } catch (error: unknown) {

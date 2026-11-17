@@ -1,4 +1,12 @@
 import React, { useEffect, useState } from 'react';
+import { ReturnBadge, formatSigned } from './ReturnBadge';
+
+
+/** Tooltip for the "vs SPY" cell: what SPY itself did over the same window. */
+const spyTitle = (item: { benchmarkReturnPercent: number | null; benchmarkStartDate: string | null }) =>
+  item.benchmarkReturnPercent !== null && item.benchmarkStartDate
+    ? `SPY ${formatSigned(item.benchmarkReturnPercent)} since its ${item.benchmarkStartDate} close (price only)`
+    : 'SPY comparison unavailable (no cost basis, no price today, or no SPY close for that date)';
 
 interface WatchlistItem {
   id: string;
@@ -8,6 +16,10 @@ interface WatchlistItem {
   priceAtAdd: number | null; // null = no real price when starred -> N/A
   currentPrice: number | null; // null = live price unavailable
   gainLossPercent: number | null;
+  // Phase D: the same gain/loss vs SPY since the day it was starred (null = N/A)
+  benchmarkReturnPercent: number | null;
+  vsBenchmarkPercent: number | null;
+  benchmarkStartDate: string | null;
   notes: string | null;
   tags: string[];
 }
@@ -204,6 +216,9 @@ export const WatchlistView: React.FC<WatchlistViewProps> = ({ isActive, onInspec
                 <th scope="col" className="px-4 py-3 text-left text-xs font-bold text-brand-light uppercase tracking-wider">
                   Return
                 </th>
+                <th scope="col" className="px-4 py-3 text-left text-xs font-bold text-brand-light uppercase tracking-wider" title="Return minus SPY's return since the day it was starred (percentage points). Price only, no dividends.">
+                  vs SPY
+                </th>
                 <th scope="col" className="px-4 py-3 text-left text-xs font-bold text-brand-light uppercase tracking-wider">
                   Tags & Portfolio Links
                 </th>
@@ -276,6 +291,11 @@ export const WatchlistView: React.FC<WatchlistViewProps> = ({ isActive, onInspec
                       ) : (
                         <span className="text-zinc-600 italic text-[11px]">N/A</span>
                       )}
+                    </td>
+
+                    {/* vs SPY (Phase D): same window, same rules as the Scorecard */}
+                    <td className="px-4 py-4 whitespace-nowrap font-mono">
+                      <ReturnBadge value={item.vsBenchmarkPercent} unit="pts" title={spyTitle(item)} />
                     </td>
 
                     {/* Tags & Portfolio linkage */}

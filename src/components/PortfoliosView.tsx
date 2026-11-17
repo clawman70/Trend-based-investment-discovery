@@ -1,4 +1,12 @@
 import React, { useEffect, useState } from 'react';
+import { ReturnBadge, formatSigned } from './ReturnBadge';
+
+
+/** Tooltip for the "vs SPY" cell: what SPY itself did over the same window. */
+const spyTitle = (item: { benchmarkReturnPercent: number | null; benchmarkStartDate: string | null }) =>
+  item.benchmarkReturnPercent !== null && item.benchmarkStartDate
+    ? `SPY ${formatSigned(item.benchmarkReturnPercent)} since its ${item.benchmarkStartDate} close (price only)`
+    : 'SPY comparison unavailable (no cost basis, no price today, or no SPY close for that date)';
 
 interface PortfolioItem {
   id: string;
@@ -7,6 +15,10 @@ interface PortfolioItem {
   priceAtAdd: number | null; // null = no real price when starred -> N/A
   currentPrice: number | null; // null = live price unavailable
   gainLossPercent: number | null;
+  // Phase D: the same gain/loss vs SPY since the day it was starred (null = N/A)
+  benchmarkReturnPercent: number | null;
+  vsBenchmarkPercent: number | null;
+  benchmarkStartDate: string | null;
   notes: string | null;
   tags: string[];
 }
@@ -336,6 +348,9 @@ export const PortfoliosView: React.FC<PortfoliosViewProps> = ({ isActive, onInsp
                                 <th scope="col" className="px-3 py-2 text-left text-[10px] font-bold text-zinc-400 uppercase font-mono">
                                   Gain/Loss
                                 </th>
+                                <th scope="col" className="px-3 py-2 text-left text-[10px] font-bold text-zinc-400 uppercase font-mono" title="Gain/loss minus SPY's return since the day it was starred (percentage points). Price only, no dividends.">
+                                  vs SPY
+                                </th>
                                 <th scope="col" className="px-3 py-2 text-center text-[10px] font-bold text-zinc-400 uppercase font-mono">
                                   Actions
                                 </th>
@@ -389,6 +404,9 @@ export const PortfoliosView: React.FC<PortfoliosViewProps> = ({ isActive, onInsp
                                     ) : (
                                       <span className="text-zinc-600 italic">N/A</span>
                                     )}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <ReturnBadge value={item.vsBenchmarkPercent} unit="pts" title={spyTitle(item)} />
                                   </td>
                                   <td className="px-3 py-2 text-center">
                                     {/* Item ID is passed to remove_item as watchlistId mapping reference */}

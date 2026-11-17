@@ -7,6 +7,8 @@ import {
   removePortfolioItem,
 } from '@/lib/stores/portfolioStore';
 import { fetchQuotes, isFinnhubConfigured } from '@/lib/finnhubService';
+import { compareWithBenchmark } from '@/lib/benchmark';
+import { BENCHMARK_TICKER } from '@/lib/trackRecord';
 
 export async function GET() {
   try {
@@ -27,12 +29,31 @@ export async function GET() {
 
     if (isFinnhubConfigured() && tickersArr.length > 0) {
       try {
-        const quotes = await fetchQuotes(tickersArr);
+        // SPY rides along in the same batch for the "vs SPY" column (Phase D)
+        const quotes = await fetchQuotes([...tickersArr, BENCHMARK_TICKER]);
         quotes.forEach((quote, symbol) => priceMap.set(symbol, quote.c));
       } catch (err) {
         console.error('Failed to fetch live prices for portfolios:', err);
       }
     }
+
+    // Phase D: each item's gain/loss vs SPY since the day it was starred (same helper as
+    // the Scorecard). Computed once for every item across all portfolios.
+    const flatItems = rawPortfolios.flatMap((port) => port.items.map((item) => item.watchlist));
+    const comparisons = await compareWithBenchmark(
+      flatItems.map((wl) => {
+        const currentPrice = priceMap.get(wl.ticker.toUpperCase()) ?? null;
+        const costBasis = wl.priceAtAdd !== null && wl.priceAtAdd > 0 ? wl.priceAtAdd : null;
+        return {
+          since: new Date(wl.addedAt),
+          returnPercent: currentPrice !== null && costBasis !== null ? ((currentPrice - costBasis) / costBasis) * 100 : null,
+        };
+      }),
+      priceMap.get(BENCHMARK_TICKER) ?? null
+    );
+    // comparisons[] is in flatItems order: portfolios in order, then each portfolio's items
+    // in order, which is exactly the order the nested map below visits them.
+    let comparisonIndex = 0;
 
     const portfolios = rawPortfolios.map((port) => {
       // Totals only include items that have both a cost basis and a live price
@@ -63,6 +84,8 @@ export async function GET() {
           priceAtAdd: wl.priceAtAdd,
           currentPrice,
           gainLossPercent,
+          addedAt: wl.addedAt,
+          ...comparisons[comparisonIndex++],
           notes: wl.notes,
           tags: wl.tags,
         };

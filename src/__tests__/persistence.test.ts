@@ -6,6 +6,7 @@ import { GET as portfoliosGET, POST as portfoliosPOST, DELETE as portfoliosDELET
 import { ScoredCompanyData } from '../lib/types';
 import { buildScoringConfig, calculateCompanyScores } from '../lib/scoring';
 import * as finnhubService from '../lib/finnhubService';
+import * as yahooService from '../lib/yahooService';
 import type { FinnhubQuote } from '../lib/finnhubService';
 import {
   memorySearches,
@@ -18,6 +19,14 @@ import {
 // Ensure database availability check always returns false for tests to exercise the fallback memory store.
 vi.mock('../lib/dbHelper', () => ({
   isDbAvailable: vi.fn().mockResolvedValue(false),
+  getCachedData: vi.fn().mockResolvedValue(null),
+  setCachedData: vi.fn(),
+}));
+
+// SPY history for the "vs SPY" columns (Phase D); null = Yahoo unavailable -> N/A
+vi.mock('../lib/yahooService', () => ({
+  fetchDailyCloses: vi.fn().mockResolvedValue(null),
+  fetchSplitEvents: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../lib/finnhubService', () => ({
@@ -236,6 +245,57 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       );
       expect(response.status).toBe(200);
       expect(memoryWatchlistItems[0].sourceSearchId).toBe('search-abc');
+    });
+  });
+
+  describe('Return vs SPY in the Watchlist and Portfolio views (Phase D step 5)', () => {
+    const SPY_NOW = 732.44;
+    const SPY_SEPT_15 = 757.39;
+    const spyReturn = ((SPY_NOW - SPY_SEPT_15) / SPY_SEPT_15) * 100; // about -3.29%
+
+    beforeEach(() => {
+      vi.mocked(yahooService.fetchDailyCloses).mockResolvedValue([
+        { date: new Date('2026-09-15T13:30:00Z'), close: SPY_SEPT_15 },
+      ]);
+      vi.mocked(finnhubService.fetchQuotes).mockResolvedValue(quotes({ AAPL: 120, SPY: SPY_NOW }));
+      memoryWatchlistItems.push(
+        // Starred Tuesday 2026-09-15 at 15:00 ET at $100
+        { id: 'w1', ticker: 'AAPL', companyName: 'Apple', addedAt: new Date('2026-09-15T19:00:00Z'), priceAtAdd: 100, sourceSearchId: null, notes: null, tags: [] },
+        // No cost basis: gain/loss N/A, so vs SPY must be N/A too
+        { id: 'w2', ticker: 'MSFT', companyName: 'Microsoft', addedAt: new Date('2026-09-15T19:00:00Z'), priceAtAdd: null, sourceSearchId: null, notes: null, tags: [] }
+      );
+    });
+
+    it('watchlist: gain/loss minus SPY over the same window, N/A without a cost basis', async () => {
+      const json = await (await watchlistGET()).json();
+      const aapl = json.find((i: { ticker: string }) => i.ticker === 'AAPL');
+      expect(aapl.gainLossPercent).toBeCloseTo(20);
+      expect(aapl.benchmarkStartDate).toBe('2026-09-15');
+      expect(aapl.benchmarkReturnPercent).toBeCloseTo(spyReturn, 6);
+      expect(aapl.vsBenchmarkPercent).toBeCloseTo(20 - spyReturn, 6);
+
+      const msft = json.find((i: { ticker: string }) => i.ticker === 'MSFT');
+      expect(msft.gainLossPercent).toBeNull();
+      expect(msft.vsBenchmarkPercent).toBeNull();
+      // SPY rides in the same quote batch: no separate call
+      expect(finnhubService.fetchQuotes).toHaveBeenCalledWith(expect.arrayContaining(['AAPL', 'MSFT', 'SPY']));
+    });
+
+    it('portfolio items get the same comparison', async () => {
+      memoryTrendPortfolios.push({ id: 'p1', name: 'Test', description: null, createdAt: new Date() });
+      memoryPortfolioItems.push({ id: 'pi1', portfolioId: 'p1', watchlistId: 'w1' });
+      const json = await (await portfoliosGET()).json();
+      const item = json[0].items[0];
+      expect(item.ticker).toBe('AAPL');
+      expect(item.vsBenchmarkPercent).toBeCloseTo(20 - spyReturn, 6);
+    });
+
+    it('is N/A when SPY history is unavailable', async () => {
+      vi.mocked(yahooService.fetchDailyCloses).mockResolvedValue(null);
+      const json = await (await watchlistGET()).json();
+      const aapl = json.find((i: { ticker: string }) => i.ticker === 'AAPL');
+      expect(aapl.gainLossPercent).toBeCloseTo(20);
+      expect(aapl.vsBenchmarkPercent).toBeNull();
     });
   });
 

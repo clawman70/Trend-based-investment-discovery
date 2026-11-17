@@ -16,6 +16,9 @@ import { fetchQuote, FinnhubQuote } from './finnhubService';
 import { fetchDailyCloses, fetchSplitEvents } from './yahooService';
 import {
   addDays,
+  excessReturn,
+  pctChange,
+  priceAsOfDate,
   BENCHMARK_TICKER,
   findCloseOnOrBefore,
   ResolvedClose,
@@ -149,4 +152,47 @@ export async function getSplitFactors(
     factors.set(splitKey(r.ticker, r.asOfDate), events ? splitFactorAfter(r.asOfDate, events) : null);
   }
   return factors;
+}
+
+export interface BenchmarkComparison {
+  /** SPY's price return from the as-of close to now, in percent; null = N/A. */
+  benchmarkReturnPercent: number | null;
+  /** The item's return minus SPY's, in percentage points; null = N/A. */
+  vsBenchmarkPercent: number | null;
+  /** Trading day whose SPY close was used (YYYY-MM-DD); null = unavailable. */
+  benchmarkStartDate: string | null;
+}
+
+/**
+ * SPY-relative return for Watchlist and Portfolio items (Phase D step 5), using the same
+ * rules as the Scorecard: SPY's close on the day the item was starred (nearest prior
+ * trading close on a weekend/holiday or before the open) to SPY's current price.
+ * `items[i].returnPercent` is the item's own gain/loss as already shown in that view.
+ * Never throws: on any failure every comparison is N/A.
+ */
+export async function compareWithBenchmark(
+  items: { since: Date; returnPercent: number | null }[],
+  benchmarkCurrent: number | null,
+  now: Date = new Date()
+): Promise<BenchmarkComparison[]> {
+  const na: BenchmarkComparison = { benchmarkReturnPercent: null, vsBenchmarkPercent: null, benchmarkStartDate: null };
+  if (items.length === 0) return [];
+  if (benchmarkCurrent === null) return items.map(() => na);
+
+  try {
+    const asOfDates = items.map((item) => priceAsOfDate(item.since));
+    const starts = await getBenchmarkStartCloses(asOfDates, now);
+    return items.map((item, i) => {
+      const start = starts.get(asOfDates[i]) ?? null;
+      const benchmarkReturnPercent = pctChange(start?.close, benchmarkCurrent);
+      return {
+        benchmarkReturnPercent,
+        vsBenchmarkPercent: excessReturn(item.returnPercent, benchmarkReturnPercent),
+        benchmarkStartDate: start?.date ?? null,
+      };
+    });
+  } catch (err) {
+    console.warn('[Benchmark] SPY comparison unavailable:', err instanceof Error ? err.message : err);
+    return items.map(() => na);
+  }
 }
