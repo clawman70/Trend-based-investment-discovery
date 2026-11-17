@@ -7,8 +7,9 @@ import { Prisma } from '@prisma/client';
 import { isDbAvailable } from '../dbHelper';
 import { prisma } from '../prisma';
 import { memorySearches, memorySearchResults, MemorySearch, MemorySearchResult } from '../memoryStore';
-import { ScoredCompanyData } from '../types';
+import { ScoredCompanyData, ScoringConfig, ScoreBreakdown } from '../types';
 import { buildRationaleNote } from '../rationale';
+import { parseScoringConfig } from '../scoring';
 
 export interface SearchSummary {
   id: string;
@@ -16,6 +17,8 @@ export interface SearchSummary {
   trends: string[];
   filters: unknown;
   trendAnalysis: unknown;
+  /** Weights and theses-run count used for this snapshot; null for snapshots before Phase C. */
+  scoringConfig: ScoringConfig | null;
 }
 
 interface SearchResultRow {
@@ -34,6 +37,10 @@ function toScoredCompanyData(row: SearchResultRow): ScoredCompanyData {
   const financialData = (row.financialData ?? {}) as Record<string, unknown>;
   const dataQuality = (row.dataQuality ?? {}) as { priceSource?: string };
   const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
+  // Missing on pre-Phase-C rows -> null ("no data"), never a made-up default
+  const optNum = (key: string): number | null => num(financialData[key]);
+  const optBool = (key: string): boolean | null =>
+    typeof financialData[key] === 'boolean' ? (financialData[key] as boolean) : null;
 
   return {
     ticker: row.ticker,
@@ -51,11 +58,32 @@ function toScoredCompanyData(row: SearchResultRow): ScoredCompanyData {
     growth5Y: financialData.growth5Y !== undefined ? (financialData.growth5Y as number | null) : null,
     debtToEquity: financialData.debtToEquity !== undefined ? (financialData.debtToEquity as number | null) : null,
     rationales: (financialData.rationales as Record<string, string>) ?? {},
+    priceToSales: optNum('priceToSales'),
+    preRevenue: optBool('preRevenue'),
+    lossMaking: optBool('lossMaking'),
+    revenueGrowthYoY: optNum('revenueGrowthYoY'),
+    change6M: optNum('change6M'),
+    rallied6M: optBool('rallied6M'),
+    scoreBreakdown: (financialData.scoreBreakdown as ScoreBreakdown | undefined) ?? undefined,
   };
 }
 
-function toSummary(row: { id: string; createdAt: Date; trends: string[]; filters: unknown; trendAnalysis: unknown }): SearchSummary {
-  return { id: row.id, createdAt: row.createdAt, trends: row.trends, filters: row.filters, trendAnalysis: row.trendAnalysis };
+function toSummary(row: {
+  id: string;
+  createdAt: Date;
+  trends: string[];
+  filters: unknown;
+  trendAnalysis: unknown;
+  scoringConfig?: unknown;
+}): SearchSummary {
+  return {
+    id: row.id,
+    createdAt: row.createdAt,
+    trends: row.trends,
+    filters: row.filters,
+    trendAnalysis: row.trendAnalysis,
+    scoringConfig: parseScoringConfig(row.scoringConfig),
+  };
 }
 
 export async function listSearches(): Promise<SearchSummary[]> {
@@ -85,6 +113,8 @@ export async function createSearch(input: {
   trends: string[];
   filters: unknown;
   trendAnalysis: unknown;
+  /** Weights + theses-run count used for these scores, so a restore re-scores the same way. */
+  scoringConfig?: ScoringConfig | null;
   results: ScoredCompanyData[];
 }): Promise<SearchSummary> {
   const resultRows: SearchResultRow[] = input.results.map((r) => ({
@@ -103,6 +133,14 @@ export async function createSearch(input: {
       debtToEquity: r.debtToEquity,
       rationales: r.rationales || {},
       relevanceScore: r.relevanceScore,
+      priceToSales: r.priceToSales ?? null,
+      preRevenue: r.preRevenue ?? null,
+      lossMaking: r.lossMaking ?? null,
+      revenueGrowthYoY: r.revenueGrowthYoY ?? null,
+      change6M: r.change6M ?? null,
+      rallied6M: r.rallied6M ?? null,
+      // Per-factor contributions as scored at save time (Phase D reads these)
+      scoreBreakdown: r.scoreBreakdown ?? null,
     },
     dataQuality: r.dataQuality,
     compositeScore: r.compositeScore,
@@ -115,6 +153,7 @@ export async function createSearch(input: {
         trends: input.trends,
         filters: (input.filters ?? {}) as Prisma.InputJsonValue,
         trendAnalysis: (input.trendAnalysis ?? {}) as Prisma.InputJsonValue,
+        scoringConfig: input.scoringConfig ? (input.scoringConfig as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
         results: {
           create: resultRows.map((r) => ({
             ...r,
@@ -134,6 +173,7 @@ export async function createSearch(input: {
     trends: input.trends,
     filters: input.filters ?? {},
     trendAnalysis: input.trendAnalysis ?? {},
+    scoringConfig: input.scoringConfig ?? null,
   };
   memorySearches.push(newSearch);
 

@@ -4,6 +4,7 @@ import { GET as historyGET, POST as historyPOST, DELETE as historyDELETE } from 
 import { GET as watchlistGET, POST as watchlistPOST, PUT as watchlistPUT, DELETE as watchlistDELETE } from '../app/api/watchlist/route';
 import { GET as portfoliosGET, POST as portfoliosPOST, DELETE as portfoliosDELETE } from '../app/api/portfolios/route';
 import { ScoredCompanyData } from '../lib/types';
+import { buildScoringConfig, calculateCompanyScores } from '../lib/scoring';
 import * as finnhubService from '../lib/finnhubService';
 import type { FinnhubQuote } from '../lib/finnhubService';
 import {
@@ -110,6 +111,63 @@ describe('Phase 3 — Persistence Layer Tests', () => {
       expect(deleteResponse.status).toBe(200);
       expect(memorySearches.length).toBe(0);
       expect(memorySearchResults.length).toBe(0);
+    });
+  });
+
+  describe('Saved scoring config with history snapshots (Phase C step 7)', () => {
+    it('saves the weights, theses-run count and scoring inputs, and returns them on restore', async () => {
+      const weights = { relevance: 10, convergence: 40, valuation: 20, health: 10, growth: 20 };
+      const scored = calculateCompanyScores(
+        [
+          {
+            ticker: 'IONQ', companyName: 'IonQ', relevanceScore: 8, trendsMatched: ['Q'], convergenceScore: 1,
+            rationales: { Q: 'quantum' }, stockPrice: 30, marketCap: 1e10, exchange: 'NYSE',
+            dataQuality: { priceSource: 'live' }, compositeScore: 0, peRatio: null, lossMaking: true,
+            priceToSales: 46.4, preRevenue: false, revenueGrowthYoY: 370.6, debtToEquity: 0, change6M: -48.3, rallied6M: false,
+          },
+        ],
+        weights,
+        { thesesRun: 1 }
+      );
+
+      const postResponse = await historyPOST(
+        new NextRequest('http://localhost:3000/api/history', {
+          method: 'POST',
+          body: JSON.stringify({
+            trends: ['Q'],
+            filters: {},
+            trendAnalysis: {},
+            scoringConfig: buildScoringConfig(weights, 1),
+            results: scored,
+          }),
+        })
+      );
+      const { id } = await postResponse.json();
+
+      const restored = await (await historyGET(new NextRequest(`http://localhost:3000/api/history?id=${id}`))).json();
+      expect(restored.search.scoringConfig).toEqual({ weights, thesesRun: 1, method: 'percentile-v1' });
+      const [row] = restored.companies;
+      expect(row).toMatchObject({
+        priceToSales: 46.4, preRevenue: false, lossMaking: true, revenueGrowthYoY: 370.6, change6M: -48.3, rallied6M: false,
+      });
+      expect(row.scoreBreakdown.factors.convergence.status).toBe('excluded');
+      // Re-scoring the restored rows with the saved config reproduces the saved score
+      const rescored = calculateCompanyScores(restored.companies, restored.search.scoringConfig.weights, {
+        thesesRun: restored.search.scoringConfig.thesesRun,
+      });
+      expect(rescored[0].compositeScore).toBe(scored[0].compositeScore);
+    });
+
+    it('older snapshots without a config come back with scoringConfig null and missing fields as null', async () => {
+      const postResponse = await historyPOST(
+        new NextRequest('http://localhost:3000/api/history', {
+          method: 'POST',
+          body: JSON.stringify({ trends: ['Old'], filters: {}, trendAnalysis: {}, scoringConfig: 'garbage', results: [] }),
+        })
+      );
+      const { id } = await postResponse.json();
+      const restored = await (await historyGET(new NextRequest(`http://localhost:3000/api/history?id=${id}`))).json();
+      expect(restored.search.scoringConfig).toBeNull();
     });
   });
 

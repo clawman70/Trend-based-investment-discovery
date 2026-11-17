@@ -4,6 +4,7 @@ export interface MemorySearch {
   trends: string[];
   filters: unknown;
   trendAnalysis: unknown;
+  scoringConfig: unknown | null; // ScoringConfig; null on snapshots saved before Phase C
 }
 
 export interface MemorySearchResult {

@@ -21,6 +21,8 @@ model Search {
   trends        String[]
   filters       Json
   trendAnalysis Json
+  /// Weights + theses-run count used to score this snapshot (Phase C). Null on older rows.
+  scoringConfig Json?
   results       SearchResult[]
 
   @@map("searches")

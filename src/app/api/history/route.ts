@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSearch, deleteSearch, getSearchWithResults, listSearches } from '@/lib/stores/historyStore';
 import { ScoredCompanyData } from '@/lib/types';
+import { parseScoringConfig } from '@/lib/scoring';
 
 interface QueryFilters {
   marketCap: string[];
@@ -32,11 +33,12 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { trends, filters, trendAnalysis, results } = body as {
+    const { trends, filters, trendAnalysis, results, scoringConfig } = body as {
       trends: string[];
       filters: QueryFilters;
       trendAnalysis: Record<string, unknown>;
       results: ScoredCompanyData[];
+      scoringConfig?: unknown;
     };
 
     if (!trends || !Array.isArray(trends) || trends.length === 0) {
@@ -47,6 +49,8 @@ export async function POST(request: NextRequest) {
       trends,
       filters: filters || {},
       trendAnalysis: trendAnalysis || {},
+      // Validated shape only; anything malformed is saved as "no config" rather than trusted
+      scoringConfig: parseScoringConfig(scoringConfig),
       results: results || [],
     });
 
