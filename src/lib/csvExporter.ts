@@ -20,8 +20,10 @@ export const exportToCSV = (data: ScoredCompanyData[], filename: string): void =
   const headers = [
     'Ticker', 'Company Name', 'Exchange', 'Composite Score', 'Convergence Score', 
     'Matched Trends Count', 'Matched Trends List', 'P/E Ratio', 'Stock Price ($)',
-    'Market Cap ($)', '1Y Price Growth (%)', '5Y Price Growth (%)', 'Debt/Equity'
+    'Market Cap ($)', '1Y Price Growth (%)', '5Y Price Growth (%)', 'Debt/Equity',
+    'Price/Sales', 'Revenue Growth YoY (%)', '6M Price Change (%)', '6M Rally >30%', 'Real-Data Factors'
   ];
+  const yesNo = (v: boolean | null | undefined) => (v === true ? 'Yes' : v === false ? 'No' : 'N/A');
 
   const formatOptional = (value: number | null | undefined, decimals: number) =>
     value !== null && value !== undefined ? value.toFixed(decimals) : 'N/A';
@@ -40,6 +42,13 @@ export const exportToCSV = (data: ScoredCompanyData[], filename: string): void =
     escapeCSVValue(formatOptional(company.growth1Y, 1)),
     escapeCSVValue(formatOptional(company.growth5Y, 1)),
     escapeCSVValue(formatOptional(company.debtToEquity, 2)),
+    escapeCSVValue(company.preRevenue && company.priceToSales == null ? 'No revenue' : formatOptional(company.priceToSales, 2)),
+    escapeCSVValue(formatOptional(company.revenueGrowthYoY, 1)),
+    escapeCSVValue(formatOptional(company.change6M, 1)),
+    escapeCSVValue(yesNo(company.rallied6M)),
+    escapeCSVValue(
+      company.scoreBreakdown ? `${company.scoreBreakdown.coverage.real} of ${company.scoreBreakdown.coverage.total}` : 'N/A'
+    ),
   ].join(','));
 
   const csvContent = [headers.join(','), ...rows].join('\n');

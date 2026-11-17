@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ScoredCompanyData } from '../lib/types';
+import { ScoreBreakdownPanel, CoverageBadge } from './ScoreBreakdownPanel';
 import { useSortableData } from '../hooks/useSortableData';
 import { exportToCSV } from '../lib/csvExporter';
 import { ArrowUpIcon, ArrowDownIcon, ExportIcon } from './icons';
@@ -9,7 +10,13 @@ interface ResultsTableProps {
   data: ScoredCompanyData[];
   watchlistTickers?: Set<string>;
   onToggleWatchlist?: (company: ScoredCompanyData) => void;
+  /** Theses that ran; with one, the overlap column carries no information (D2). */
+  thesesRun?: number;
 }
+
+const NA = () => <span className="text-zinc-600 italic">N/A</span>;
+
+const formatSignedPct = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
 
 const formatCurrency = (num: number, decimals = 2) => {
   if (num === 0) return 'N/A';
@@ -24,7 +31,7 @@ const formatMarketCap = (mc: number) => {
   return `$${new Intl.NumberFormat('en-US').format(mc)}`;
 };
 
-export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTickers = new Set(), onToggleWatchlist }) => {
+export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTickers = new Set(), onToggleWatchlist, thesesRun = 1 }) => {
   const { items, requestSort, sortConfig } = useSortableData(data);
   const [expandedTickers, setExpandedTickers] = useState<Record<string, boolean>>({});
   const [peersViewTicker, setPeersViewTicker] = useState<string | null>(null);
@@ -52,6 +59,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTicke
   };
 
   const getConvergenceBadgeStyle = (score: number) => {
+    if (thesesRun <= 1) return 'text-zinc-400 bg-zinc-900 border-zinc-800'; // one thesis: no signal
     if (score >= 0.99) {
       return 'text-emerald-400 bg-emerald-950/40 border-emerald-800 shadow-[0_0_8px_rgba(52,211,153,0.15)]';
     }
@@ -197,22 +205,65 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTicke
                       </span>
                     </td>
 
-                    {/* P/E Ratio */}
+                    {/* P/E Ratio. "Loss" = real negative EPS, the reason there's no P/E. */}
                     <td className="px-4 py-4.5 font-mono text-xs text-zinc-300">
-                      {item.peRatio !== null && item.peRatio !== undefined
-                        ? item.peRatio.toFixed(1)
-                        : <span className="text-zinc-600 italic">N/A</span>}
+                      {item.peRatio !== null && item.peRatio !== undefined ? (
+                        item.peRatio.toFixed(1)
+                      ) : item.lossMaking ? (
+                        <span className="text-brand-red/80" title="Negative trailing earnings, so P/E doesn't apply">Loss</span>
+                      ) : (
+                        <NA />
+                      )}
                     </td>
 
-                    {/* 1Y Price Growth */}
+                    {/* Price / Sales (the valuation factor's input) */}
+                    <td className="px-4 py-4.5 font-mono text-xs text-zinc-300">
+                      {typeof item.priceToSales === 'number' ? (
+                        item.priceToSales.toFixed(1)
+                      ) : item.preRevenue ? (
+                        <span className="text-brand-yellow/80" title="Finnhub reports zero revenue">No rev.</span>
+                      ) : (
+                        <NA />
+                      )}
+                    </td>
+
+                    {/* Revenue growth YoY (the growth factor's input) */}
+                    <td className="px-4 py-4.5 font-mono text-xs">
+                      {typeof item.revenueGrowthYoY === 'number' ? (
+                        <span className={item.revenueGrowthYoY >= 0 ? 'text-brand-green' : 'text-brand-red'}>
+                          {formatSignedPct(item.revenueGrowthYoY)}
+                        </span>
+                      ) : (
+                        <NA />
+                      )}
+                    </td>
+
+                    {/* 1Y Price Growth (display only, not scored) */}
                     <td className="px-4 py-4.5 font-mono text-xs">
                       {item.growth1Y !== null && item.growth1Y !== undefined ? (
                         <span className={item.growth1Y >= 0 ? 'text-brand-green' : 'text-brand-red'}>
-                          {item.growth1Y >= 0 ? '+' : ''}
-                          {item.growth1Y.toFixed(1)}%
+                          {formatSignedPct(item.growth1Y)}
                         </span>
                       ) : (
-                        <span className="text-zinc-600 italic">N/A</span>
+                        <NA />
+                      )}
+                    </td>
+
+                    {/* 6M rally flag (decision D4: shown, never scored) */}
+                    <td className="px-4 py-4.5 font-mono text-xs whitespace-nowrap">
+                      {typeof item.change6M === 'number' ? (
+                        item.rallied6M ? (
+                          <span
+                            className="text-[10px] font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 rounded"
+                            title="Up more than 30% in 6 months: the market may already have noticed"
+                          >
+                            ▲ RALLY {formatSignedPct(item.change6M)}
+                          </span>
+                        ) : (
+                          <span className="text-zinc-500">{formatSignedPct(item.change6M)}</span>
+                        )
+                      ) : (
+                        <NA />
                       )}
                     </td>
 
@@ -228,6 +279,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTicke
 
                     {/* Data Quality Badge */}
                     <td className="px-4 py-4.5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex flex-col items-start gap-1">
                       {item.dataQuality.priceSource === 'live' ? (
                         <span className="text-[10px] font-semibold text-brand-green bg-brand-green/10 border border-brand-green/20 px-2 py-0.5 rounded-full inline-block text-center">
                           Live
@@ -237,6 +289,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTicke
                           No Price
                         </span>
                       )}
+                      {item.scoreBreakdown && <CoverageBadge coverage={item.scoreBreakdown.coverage} />}
+                      </div>
                     </td>
 
                     {/* Star / Watchlist Button */}
@@ -263,6 +317,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, watchlistTicke
                     <tr className="bg-zinc-950/40">
                       <td colSpan={tableHeaders.length + (onToggleWatchlist ? 3 : 2)} className="px-6 py-4 border-t border-brand-border/20">
                         <div className="space-y-6 pl-8">
+                          <ScoreBreakdownPanel company={item} />
+
                           <div className="space-y-3">
                             <div className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest font-bold">
                               Convergence Rationales:
@@ -309,7 +365,10 @@ const tableHeaders: { key: keyof ScoredCompanyData; label: string }[] = [
   { key: 'companyName', label: 'Company' },
   { key: 'convergenceScore', label: 'Overlap' },
   { key: 'peRatio', label: 'P/E' },
+  { key: 'priceToSales', label: 'P/S' },
+  { key: 'revenueGrowthYoY', label: 'Rev YoY' },
   { key: 'growth1Y', label: '1Y' },
+  { key: 'change6M', label: '6M' },
   { key: 'stockPrice', label: 'Price' },
   { key: 'marketCap', label: 'Mkt Cap' },
 ];

@@ -14,8 +14,8 @@ import { DetailsModal } from '@/components/DetailsModal';
 import { ResearchPanel } from '@/components/ResearchPanel';
 import { ResearchReport } from '@/components/ResearchReport';
 import { SpendCapBanner } from '@/components/SpendCapBanner';
-import { ScoredCompanyData, Filters, TrendAnalysis, TrendResearchReport } from '@/lib/types';
-import { calculateCompanyScores } from '@/lib/scoring';
+import { ScoredCompanyData, Filters, ScoringWeights, TrendAnalysis, TrendResearchReport } from '@/lib/types';
+import { buildScoringConfig, DEFAULT_WEIGHTS, parseScoringConfig, scoreAndRank } from '@/lib/scoring';
 import { applyRealDataFilters } from '@/lib/resultFilters';
 import { buildRationaleNote } from '@/lib/rationale';
 
@@ -33,12 +33,10 @@ export default function Home() {
   const [trends, setTrends] = useState<string[]>(['']);
   const [trendAnalyses, setTrendAnalyses] = useState<Record<string, TrendAnalysis>>({});
   const [showDiscoverButton, setShowDiscoverButton] = useState<boolean>(false);
-  const [weights, setWeights] = useState({
-    relevance: 30,
-    convergence: 30,
-    valuation: 20,
-    health: 20,
-  });
+  const [weights, setWeights] = useState<ScoringWeights>(DEFAULT_WEIGHTS);
+  // Theses that actually returned results in the current run. 1 = convergence is left out
+  // of the score and its slider is greyed out (decision D2).
+  const [thesesRun, setThesesRun] = useState<number>(1);
 
   const [results, setResults] = useState<ScoredCompanyData[]>([]);
   const [invalidTickers, setInvalidTickers] = useState<string[]>([]);
@@ -128,7 +126,17 @@ export default function Home() {
       setTrends(data.search.trends);
       setFilters(data.search.filters);
       setTrendAnalyses(data.search.trendAnalysis || {});
-      setResults(data.companies || []);
+
+      // Re-score with the weights and theses-run count saved with the snapshot, so it
+      // ranks exactly as it did when saved. Snapshots from before Phase C have no saved
+      // config: they're re-scored with the current weights, and any data they didn't
+      // store (P/S, revenue growth) shows as missing.
+      const savedConfig = parseScoringConfig(data.search.scoringConfig);
+      const restoredThesesRun = savedConfig?.thesesRun ?? (data.search.trends?.length || 1);
+      const restoredWeights = savedConfig?.weights ?? weights;
+      setWeights(restoredWeights);
+      setThesesRun(restoredThesesRun);
+      setResults(scoreAndRank(data.companies || [], restoredWeights, { thesesRun: restoredThesesRun }));
       setInvalidTickers([]);
       setValidationBypassed(false);
       setFailedTrends([]);
@@ -139,7 +147,7 @@ export default function Home() {
       const errorMessage = err instanceof Error ? err.message : 'Could not load search history snapshot';
       setError(errorMessage);
     }
-  }, []);
+  }, [weights]);
 
   const handleAnalyzeTrends = useCallback(async () => {
     const activeTrends = trends.filter((t) => t.trim().length > 0);
@@ -222,8 +230,12 @@ export default function Home() {
         companies: ScoredCompanyData[];
         invalidTickers: string[];
         failedTrends?: string[];
+        thesesRun?: number;
         validationMetrics?: { validationBypassed?: boolean };
       };
+      // Server counts only theses that succeeded (bug B4); fall back to what was submitted
+      const runThesesCount = discoverData.thesesRun ?? activeTrends.length;
+      setThesesRun(runThesesCount);
       
       const discovered = discoverData.companies || [];
       const droppedTickers = discoverData.invalidTickers || [];
@@ -271,6 +283,12 @@ export default function Home() {
           debtToEquity: enrichInfo?.debtToEquity ?? null,
           growth1Y: enrichInfo?.growth1Y ?? null,
           growth5Y: enrichInfo?.growth5Y ?? null,
+          priceToSales: enrichInfo?.priceToSales ?? null,
+          preRevenue: enrichInfo?.preRevenue ?? null,
+          lossMaking: enrichInfo?.lossMaking ?? null,
+          revenueGrowthYoY: enrichInfo?.revenueGrowthYoY ?? null,
+          change6M: enrichInfo?.change6M ?? null,
+          rallied6M: enrichInfo?.rallied6M ?? null,
           dataQuality: enrichInfo?.dataQuality ?? {
             priceSource: 'unavailable',
           },
@@ -290,11 +308,8 @@ export default function Home() {
         return;
       }
 
-      // 4. Calculate weighted composite scores client-side
-      const scoredResults = calculateCompanyScores(capFilteredResults, weights);
-      
-      // Sort primarily by composite score
-      scoredResults.sort((a, b) => b.compositeScore - a.compositeScore);
+      // 4. Calculate weighted composite scores client-side, best first (src/lib/scoring.ts)
+      const scoredResults = scoreAndRank(capFilteredResults, weights, { thesesRun: runThesesCount });
 
       setResults(scoredResults);
       setLoadingStep('completed');
@@ -312,6 +327,8 @@ export default function Home() {
               currentPrice: filters.currentPrice,
             },
             trendAnalysis: trendAnalyses,
+            // Saved so a restored search re-scores the same way (and for the Phase D track record)
+            scoringConfig: buildScoringConfig(weights, runThesesCount),
             results: scoredResults,
           }),
         });
@@ -345,15 +362,10 @@ export default function Home() {
     });
   }, []);
 
-  const handleWeightsChange = useCallback((newWeights: typeof weights) => {
+  const handleWeightsChange = useCallback((newWeights: ScoringWeights) => {
     setWeights(newWeights);
-    setResults((prev) => {
-      if (prev.length === 0) return prev;
-      const reCalculated = calculateCompanyScores(prev, newWeights);
-      reCalculated.sort((a, b) => b.compositeScore - a.compositeScore);
-      return reCalculated;
-    });
-  }, []);
+    setResults((prev) => (prev.length === 0 ? prev : scoreAndRank(prev, newWeights, { thesesRun })));
+  }, [thesesRun]);
 
   // Client-side stock price threshold filtering
   let filteredResults = results;
@@ -496,6 +508,7 @@ export default function Home() {
                   ) : (
                     <ResultsTable
                       data={filteredResults}
+                      thesesRun={thesesRun}
                       watchlistTickers={watchlistTickers}
                       onToggleWatchlist={handleToggleWatchlist}
                     />
@@ -503,7 +516,7 @@ export default function Home() {
                 </div>
 
                 <div className="lg:col-span-3 order-1 lg:order-2">
-                  <ScoringSliders weights={weights} onChangeWeights={handleWeightsChange} />
+                  <ScoringSliders weights={weights} onChangeWeights={handleWeightsChange} thesesRun={thesesRun} />
                 </div>
               </div>
             )}
