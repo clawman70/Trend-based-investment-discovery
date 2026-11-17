@@ -8,6 +8,7 @@ import { ValidationAlerts } from '@/components/ValidationAlerts';
 import { TrendReportCard } from '@/components/TrendReportCard';
 import { ScoringSliders } from '@/components/ScoringSliders';
 import { HistoryView } from '@/components/HistoryView';
+import { ScorecardView } from '@/components/ScorecardView';
 import { WatchlistView } from '@/components/WatchlistView';
 import { PortfoliosView } from '@/components/PortfoliosView';
 import { DetailsModal } from '@/components/DetailsModal';
@@ -569,6 +570,8 @@ export default function Home() {
         {activeTab === 'history' && (
           <HistoryView onRestoreSearch={handleRestoreSearch} isActive={activeTab === 'history'} />
         )}
+
+        {activeTab === 'scorecard' && <ScorecardView isActive={activeTab === 'scorecard'} />}
 
         {activeTab === 'watchlist' && (
           <WatchlistView isActive={activeTab === 'watchlist'} onInspect={setInspectedTicker} />

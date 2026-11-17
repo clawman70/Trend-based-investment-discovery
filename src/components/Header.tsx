@@ -11,6 +11,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
     { id: 'research', label: 'RESEARCH' },
     { id: 'discover', label: 'DISCOVER' },
     { id: 'history', label: 'HISTORY LOGS' },
+    { id: 'scorecard', label: 'SCORECARD' }, // Phase D track record
     { id: 'watchlist', label: 'WATCHLIST' },
     { id: 'portfolios', label: 'PORTFOLIOS' },
   ];
