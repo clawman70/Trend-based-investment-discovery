@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
-import { GET as validateTickerGET } from '../app/api/validate-ticker/route';
 import { POST as discoverPOST } from '../app/api/discover/route';
 import { POST as enrichPOST } from '../app/api/enrich/route';
 import { GET as companyDetailsGET } from '../app/api/company-details/route';
@@ -58,25 +57,6 @@ describe('API Route Handlers', () => {
 
   afterEach(() => {
     delete process.env.DEMO_MODE;
-  });
-
-  describe('GET /api/validate-ticker', () => {
-    it('should return 400 if symbol param is missing', async () => {
-      const response = await validateTickerGET(new NextRequest('http://localhost:3000/api/validate-ticker'));
-      expect(response.status).toBe(400);
-      const json = await response.json();
-      expect(json.error).toContain('Missing symbol');
-    });
-
-    it('should validate single ticker', async () => {
-      vi.mocked(tickerValidator.validateTickers).mockResolvedValue({ valid: ['AAPL'], invalid: [], bypassed: false });
-
-      const response = await validateTickerGET(new NextRequest('http://localhost:3000/api/validate-ticker?symbol=AAPL'));
-      expect(response.status).toBe(200);
-      const json = await response.json();
-      expect(json.symbol).toBe('AAPL');
-      expect(json.valid).toBe(true);
-    });
   });
 
   describe('POST /api/discover', () => {

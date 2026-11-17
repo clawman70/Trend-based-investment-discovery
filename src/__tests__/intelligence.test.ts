@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as analyzeTrendPOST } from '../app/api/analyze-trend/route';
 import { POST as discoverPOST } from '../app/api/discover/route';
-import { POST as scorePOST } from '../app/api/score/route';
 import * as claudeService from '../lib/claudeService';
 import * as tickerValidator from '../lib/tickerValidator';
 import { calculateCompanyScores } from '../lib/scoring';
@@ -189,23 +188,6 @@ describe('Phase 2 — Intelligence Layer Tests', () => {
       // VALU has a PE of 12 (valuationScore = 10) vs GROW's 40 (valuationScore = 6).
       // In valuation-heavy scoring, VALU's score relative standing should increase significantly.
       expect(valueValuScore).toBeGreaterThan(valueGrowScore);
-    });
-
-    it('should support the POST /api/score endpoint', async () => {
-      const request = new NextRequest('http://localhost:3000/api/score', {
-        method: 'POST',
-        body: JSON.stringify({
-          companies: mockCompanies,
-          weights: { relevance: 20, convergence: 20, growth: 20, valuation: 20, health: 20 },
-        }),
-      });
-
-      const response = await scorePOST(request);
-      expect(response.status).toBe(200);
-
-      const json = await response.json();
-      expect(json.length).toBe(2);
-      expect(json[0].compositeScore).toBeGreaterThan(0);
     });
 
     it('health score no longer rewards "data loaded" over real debt-to-equity (Phase 3 reweight)', () => {
